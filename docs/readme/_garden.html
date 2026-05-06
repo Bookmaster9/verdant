@@ -1,0 +1,215 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<title>Verdant — garden</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"/>
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin/>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,300..700;1,9..144,300..700&family=JetBrains+Mono:wght@400;500&family=Caveat:wght@400;600&display=swap" rel="stylesheet"/>
+<link rel="stylesheet" href="../verdant.css"/>
+<style>
+  body { background:#ddd2b3; }
+  .browser-frame {
+    width: 1500px;
+    background: var(--paper-warm);
+    border: 1.5px solid var(--ink);
+    box-shadow: 8px 8px 0 var(--ink);
+    border-radius: 16px; overflow: hidden;
+  }
+  .browser-bar {
+    height: 38px; display: flex; align-items: center; gap: 8px;
+    padding: 0 14px; background: var(--paper-deep);
+    border-bottom: 1.5px solid var(--ink);
+  }
+  .dot { width: 11px; height: 11px; border-radius: 50%; border: 1.25px solid var(--ink); }
+  .browser-bar .url {
+    flex: 1; margin: 0 14px;
+    background: var(--paper-warm); border: 1.25px solid var(--ink);
+    border-radius: 999px; padding: 4px 14px;
+    font-family: "JetBrains Mono", monospace; font-size: 11px;
+    color: var(--ink-soft); text-align: center;
+  }
+  .garden-mock {
+    padding: 28px 36px 36px;
+    background: radial-gradient(ellipse at top right, rgba(245,219,160,0.35) 0%, transparent 50%), var(--paper);
+    position: relative;
+  }
+  .garden-mock::before {
+    content: ""; position: absolute; inset: 0;
+    background-image: radial-gradient(circle, rgba(43,36,24,0.06) 1px, transparent 1.2px);
+    background-size: 22px 22px; pointer-events: none;
+  }
+  .gm-topnav {
+    display: flex; justify-content: space-between; align-items: center;
+    padding-bottom: 18px; margin-bottom: 22px;
+    border-bottom: 1.25px dashed var(--ink-soft); position: relative;
+  }
+  .gm-logo { display: flex; align-items: center; gap: 10px; font-family: "Fraunces", serif; font-size: 22px; font-weight: 500; }
+  .gm-nav { display: flex; gap: 24px; font-family: "Fraunces", serif; font-size: 14px; color: var(--ink-soft); }
+  .gm-nav .active { color: var(--moss-deep); border-bottom: 1.5px solid var(--moss-deep); padding-bottom: 2px; }
+  .gm-greeting { position: relative; margin-bottom: 24px; }
+  .gm-greeting h2 { font-family: "Fraunces", serif; font-size: 44px; margin: 0; font-weight: 400; letter-spacing: -0.01em; font-variation-settings: '"opsz" 144'; }
+  .gm-greeting .sub { font-family: "Fraunces", serif; font-style: italic; font-size: 16px; color: var(--ink-soft); margin-top: 4px; }
+  .gm-row { display: grid; grid-template-columns: 1.4fr 1fr; gap: 28px; }
+  .gm-section-title { font-family: "JetBrains Mono", monospace; font-size: 11px; letter-spacing: 0.16em; text-transform: uppercase; color: var(--ink-faded); margin-bottom: 10px; }
+  .gm-sprouts { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+  .gm-sprout {
+    background: var(--paper-warm); border: 1.5px solid var(--ink);
+    border-radius: 14px; box-shadow: 3px 3px 0 var(--ink);
+    padding: 16px; display: grid; grid-template-columns: auto 1fr;
+    gap: 14px; align-items: center; position: relative;
+  }
+  .gm-sprout .meta { font-family: "JetBrains Mono", monospace; font-size: 10px; color: var(--ink-faded); letter-spacing: 0.1em; text-transform: uppercase; margin-bottom: 4px; }
+  .gm-sprout h3 { font-family: "Fraunces", serif; font-size: 22px; margin: 0; font-weight: 500; }
+  .gm-sprout .deadline { font-family: "Fraunces", serif; font-style: italic; font-size: 13px; color: var(--ink-soft); margin-top: 6px; }
+  .gm-progress { height: 6px; background: var(--paper-deep); border: 1px solid var(--ink); border-radius: 999px; overflow: hidden; margin-top: 10px; }
+  .gm-progress > div { height: 100%; background: var(--moss); }
+  .tape { position: absolute; width: 78px; height: 22px; background: rgba(245, 219, 160, 0.7); border: 1.25px solid rgba(43,36,24,0.2); }
+  .gm-today { background: var(--leaf-pale); border: 1.5px solid var(--ink); border-radius: 14px; padding: 16px; box-shadow: 3px 3px 0 var(--ink); position: relative; }
+  .gm-today h3 { font-family: "Fraunces", serif; font-weight: 500; font-size: 22px; margin: 0 0 12px; }
+  .gm-tile { background: var(--paper-warm); border: 1.5px solid var(--ink); border-radius: 10px; padding: 8px 10px; margin-bottom: 6px; display: flex; align-items: center; gap: 10px; font-family: "Fraunces", serif; font-size: 13px; }
+  .gm-tile .time { font-family: "JetBrains Mono", monospace; font-size: 10px; color: var(--ink-faded); width: 40px; }
+  .gm-tile .pill { background: var(--moss); color: #f8f1de; border-radius: 999px; padding: 2px 8px; font-size: 10px; font-family: "JetBrains Mono", monospace; letter-spacing: 0.05em; }
+</style>
+</head>
+<body style="margin:0; padding:0; background:#ddd2b3; width:924px; height:555px; overflow:hidden;">
+<div style="width:1500px; height:900px; transform: scale(0.616); transform-origin: top left;">
+  <div class="browser-frame">
+    <div class="browser-bar">
+      <span class="dot" style="background:#e29886"></span>
+      <span class="dot" style="background:#e9c46a"></span>
+      <span class="dot" style="background:#88a755"></span>
+      <span class="url">verdant.garden / my-garden</span>
+    </div>
+    <div class="garden-mock">
+      <div class="gm-topnav">
+        <div class="gm-logo">
+          <svg width="28" height="32" viewBox="0 0 60 80">
+            <path d="M14 70 L46 70 L42 60 L18 60 Z" fill="#8b6f4a" stroke="#2b2418" stroke-width="1.5"/>
+            <line x1="30" y1="60" x2="30" y2="36" stroke="#3d5524" stroke-width="2.5"/>
+            <path d="M30 42 Q 46 38, 46 24 Q 32 22, 30 42" fill="#5d7a3a" stroke="#2b2418" stroke-width="1.5"/>
+          </svg>
+          Verdant
+        </div>
+        <div class="gm-nav">
+          <span class="active">My garden</span>
+          <span>Sprout</span>
+          <span>Schedule</span>
+          <span>Settings</span>
+        </div>
+      </div>
+
+      <div class="gm-greeting">
+        <h2>Good morning, Maeve.</h2>
+        <p class="sub">Three sprouts under your care · the swing &amp; flare bed is flowering.</p>
+        <svg style="position:absolute; right: 30px; top: -10px;" width="64" height="64" viewBox="0 0 100 100">
+          <circle cx="50" cy="50" r="20" fill="#e9c46a" stroke="#2b2418" stroke-width="2"/>
+          <g stroke="#2b2418" stroke-width="2" stroke-linecap="round">
+            <line x1="50" y1="16" x2="50" y2="22"/>
+            <line x1="50" y1="78" x2="50" y2="84"/>
+            <line x1="16" y1="50" x2="22" y2="50"/>
+            <line x1="78" y1="50" x2="84" y2="50"/>
+            <line x1="26" y1="26" x2="30" y2="30"/>
+            <line x1="70" y1="70" x2="74" y2="74"/>
+            <line x1="74" y1="26" x2="70" y2="30"/>
+            <line x1="26" y1="74" x2="30" y2="70"/>
+          </g>
+        </svg>
+      </div>
+
+      <div class="gm-row">
+        <div>
+          <div class="gm-section-title">Your sprouts</div>
+          <div class="gm-sprouts">
+            <div class="gm-sprout">
+              <div class="tape" style="left: 18px; top: -10px; transform: rotate(-3deg);"></div>
+              <svg width="64" height="74" viewBox="0 0 60 80">
+                <path d="M14 70 L46 70 L42 60 L18 60 Z" fill="#8b6f4a" stroke="#2b2418" stroke-width="1.5"/>
+                <line x1="30" y1="60" x2="30" y2="32" stroke="#3d5524" stroke-width="2.5"/>
+                <path d="M30 50 Q 14 46, 14 32 Q 26 30, 30 50" fill="#88a755" stroke="#2b2418" stroke-width="1.5"/>
+                <path d="M30 42 Q 46 38, 46 24 Q 32 22, 30 42" fill="#5d7a3a" stroke="#2b2418" stroke-width="1.5"/>
+                <circle cx="30" cy="26" r="5" fill="#e29886" stroke="#2b2418" stroke-width="1.25"/>
+              </svg>
+              <div>
+                <div class="meta">pole · 12wk</div>
+                <h3>Learn to do a flare</h3>
+                <div class="deadline"><i>by Aug 12 · ~6wks left</i></div>
+                <div class="gm-progress"><div style="width:62%"></div></div>
+              </div>
+            </div>
+            <div class="gm-sprout">
+              <div class="tape" style="left: 30px; top: -10px; transform: rotate(2deg);"></div>
+              <svg width="64" height="74" viewBox="0 0 60 80">
+                <path d="M14 70 L46 70 L42 60 L18 60 Z" fill="#8b6f4a" stroke="#2b2418" stroke-width="1.5"/>
+                <line x1="30" y1="60" x2="30" y2="38" stroke="#3d5524" stroke-width="2.5"/>
+                <path d="M30 48 Q 18 44, 20 36 Q 28 34, 30 48" fill="#88a755" stroke="#2b2418" stroke-width="1.5"/>
+                <path d="M30 44 Q 42 40, 40 32 Q 32 30, 30 44" fill="#5d7a3a" stroke="#2b2418" stroke-width="1.5"/>
+              </svg>
+              <div>
+                <div class="meta">conversational · 9mo</div>
+                <h3>Korean basics</h3>
+                <div class="deadline"><i>by Mar 1 · ~9mo left</i></div>
+                <div class="gm-progress"><div style="width:34%"></div></div>
+              </div>
+            </div>
+            <div class="gm-sprout">
+              <svg width="64" height="74" viewBox="0 0 60 80">
+                <path d="M14 70 L46 70 L42 60 L18 60 Z" fill="#8b6f4a" stroke="#2b2418" stroke-width="1.5"/>
+                <line x1="30" y1="60" x2="30" y2="44" stroke="#3d5524" stroke-width="2.5"/>
+                <ellipse cx="30" cy="42" rx="6" ry="4" fill="#b5cf7a" stroke="#2b2418" stroke-width="1.5"/>
+              </svg>
+              <div>
+                <div class="meta">technique · 6wk</div>
+                <h3>Watercolor — washes</h3>
+                <div class="deadline"><i>by Jul 6 · just sprouted</i></div>
+                <div class="gm-progress"><div style="width:12%"></div></div>
+              </div>
+            </div>
+            <div class="gm-sprout" style="background: rgba(216,230,181,0.4); border-style: dashed;">
+              <div style="width: 64px; height: 64px; display: grid; place-items:center;">
+                <svg width="44" height="44" viewBox="0 0 100 100" stroke="#2b2418" stroke-width="2.5" stroke-linecap="round" fill="none">
+                  <line x1="50" y1="20" x2="50" y2="80"/>
+                  <line x1="20" y1="50" x2="80" y2="50"/>
+                </svg>
+              </div>
+              <div>
+                <h3 style="color: var(--ink-faded);">Plant a new sprout</h3>
+                <div class="deadline"><i>tell Fern your goal — she'll plot the path</i></div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div>
+          <div class="gm-section-title">Today's plot · Mon, May 5</div>
+          <div class="gm-today">
+            <div class="tape" style="right: 30px; top: -10px; transform: rotate(3deg);"></div>
+            <h3>4 things bloom today</h3>
+            <div class="gm-tile">
+              <span class="time">7:00a</span>
+              <span class="pill">lesson</span>
+              <span>Wrist &amp; shoulder warmup</span>
+            </div>
+            <div class="gm-tile">
+              <span class="time">7:25a</span>
+              <span class="pill" style="background:#3d5524;">drill</span>
+              <span>Mushroom hops × 4 sets</span>
+            </div>
+            <div class="gm-tile">
+              <span class="time">12:30p</span>
+              <span class="pill" style="background:#88a755;">study</span>
+              <span>Korean Anki · 22 reps</span>
+            </div>
+            <div class="gm-tile">
+              <span class="time">7:00p</span>
+              <span class="pill" style="background:#e9c46a; color:#2b2418;">video</span>
+              <span>Watch flare swings (15min)</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+</body>
+</html>

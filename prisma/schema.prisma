@@ -1,0 +1,224 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+model User {
+  id            String    @id @default(cuid())
+  name          String?
+  email         String?   @unique
+  emailVerified DateTime?
+  image         String?
+  accounts      Account[]
+  sessions      Session[]
+  plans         LearningPlan[]
+  preferences   UserPreference?
+}
+
+model Account {
+  id                String  @id @default(cuid())
+  userId            String
+  type              String
+  provider          String
+  providerAccountId String
+  refresh_token     String?
+  access_token      String?
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String?
+  session_state     String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+}
+
+model Session {
+  id           String   @id @default(cuid())
+  sessionToken String   @unique
+  userId       String
+  expires      DateTime
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model VerificationToken {
+  identifier String
+  token      String   @unique
+  expires    DateTime
+
+  @@unique([identifier, token])
+}
+
+/// Per-user time preferences, workload, calendar connected flag, effectiveness by slot (JSON)
+model UserPreference {
+  id        String @id @default(cuid())
+  userId    String @unique
+  /// JSON: { "weekday": { "0": { "start": "19:00", "end": "22:00" } }, ... }
+  timeWindows   String
+  maxMinutesDay Int   @default(90)
+  /// optional: user's intended weekly study minutes target (design Q4, α). null = infer from windows.
+  weeklyMinutesTarget Int?
+  pushToCalendar Boolean @default(false)
+  /// slot effectiveness: { "Mon-19:30": 4.2, ... }
+  slotEffectiveness  String  @default("{}")
+  /// cancellation counts per day-of-week
+  slotCancellations  String  @default("{}")
+  /// dashboard sprout sort mode: "deadline" | "created" | "custom"
+  sproutSortMode     String  @default("deadline")
+  /// custom drag-reorder of sprout tiles. JSON array of plan IDs in order.
+  /// Only consulted when sproutSortMode = "custom"; missing IDs sort to end.
+  sproutCustomOrder  String  @default("[]")
+  /// Timestamp when the user finished (or skipped) the onboarding modal.
+  /// Null = first-time user; the modal will gate /plan/new until set.
+  onboardedAt        DateTime?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+/// One active plan per user in MVP; we use status
+model LearningPlan {
+  id            String   @id @default(cuid())
+  userId        String
+  title         String
+  /// goal, deadline, resources, raw LLM or fallback plan JSON
+  targetSkill   String
+  deadline      DateTime
+  startDate     DateTime
+  initialResources String @default("[]")
+  /// Full structured plan: phases, tasks
+  planJson      String
+  /// Previous planJson, preserved for one-click revert from a regenerate action.
+  planJsonPrev  String?
+  /// Scheduled sessions with calendar ids
+  scheduleJson  String   @default("[]")
+  /// supplemental resource suggestions
+  recommendations String @default("[]")
+  status        String   @default("active") // active, archived, paused
+
+  /// AI-authored "Fern's notes" rendered atop the tend page; JSON array of {kicker, body}.
+  fernNotes              String    @default("[]")
+  fernNotesGeneratedAt   DateTime?
+
+  /// Freeform planner-only note from the user (design Q4, δ). Goes into the AI prompt verbatim.
+  freeformNote     String?
+  /// User-declared blackout date ranges, JSON: [{from: "YYYY-MM-DD", to: "YYYY-MM-DD", reason?: "..."}]
+  manualBlackouts  String @default("[]")
+  /// Persistent placement rules (PlacementRule[]) applied to every packer invocation
+  /// for this plan. Populated by NL edits the user opted to "save as preference".
+  placementRules   String @default("[]")
+
+  /// FSRS retention target driver: 1 (gentle, R=0.80), 2 (steady, R=0.90), 3 (focused, R=0.95).
+  intensity         Int     @default(2)
+  /// FSRS post-deadline behavior: "stop" (archive at deadline) | "maintain" (continue at R=0.7).
+  postDeadlineMode  String  @default("stop")
+
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  user          User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  taskCompletions  TaskCompletion[]
+  lessonStates     LessonState[]
+  reviewInstances  ReviewInstance[]
+  taskJournals     TaskJournal[]
+
+  @@index([userId, status])
+}
+
+/// Stores completion + rating for lesson and milestone tasks. Reviews use ReviewInstance instead.
+model TaskCompletion {
+  id         String   @id @default(cuid())
+  planId     String
+  taskId     String
+  completed  Boolean  @default(false)
+  /// FSRS-aligned 4-button rating mapped to {1,2,4,5}. 1=Again, 2=Hard, 4=Good, 5=Easy.
+  rating     Int?
+  completedAt   DateTime?
+
+  plan LearningPlan @relation(fields: [planId], references: [id], onDelete: Cascade)
+
+  @@unique([planId, taskId])
+  @@index([planId])
+}
+
+/// FSRS memory state per lesson. Future per-concept migration: rename to ConceptState,
+/// change FK from lessonId to conceptId. Same shape otherwise.
+model LessonState {
+  id           String   @id @default(cuid())
+  planId       String
+  /// References the lesson task's id within planJson (PlanTask.id)
+  lessonId     String
+  /// FSRS difficulty (1.0 - 10.0)
+  difficulty   Float
+  /// FSRS stability in days
+  stability    Float
+  /// Last time user rated a review of this lesson; null until first review
+  lastReview   DateTime?
+  /// Number of "Again" ratings — drives lapse handling
+  lapses       Int      @default(0)
+
+  plan         LearningPlan     @relation(fields: [planId], references: [id], onDelete: Cascade)
+  reviews      ReviewInstance[]
+
+  @@unique([planId, lessonId])
+  @@index([planId])
+}
+
+/// Materialized review tasks (projected + completed). One row per scheduled review of a lesson.
+model ReviewInstance {
+  id            String    @id @default(cuid())
+  planId        String
+  lessonStateId String
+  /// True = FSRS-projected, not yet rated. False = user rated it.
+  projected     Boolean   @default(true)
+  /// FSRS-recommended due date; the packer turns this into a calendar slot.
+  dueAt         DateTime
+  /// Set when user rates the review.
+  completedAt   DateTime?
+  /// 1=Again, 2=Hard, 4=Good, 5=Easy. Null while projected.
+  rating        Int?
+
+  lessonState   LessonState   @relation(fields: [lessonStateId], references: [id], onDelete: Cascade)
+  plan          LearningPlan  @relation(fields: [planId], references: [id], onDelete: Cascade)
+
+  @@index([planId, dueAt])
+  @@index([lessonStateId, projected])
+}
+
+/// Per-task journal entry. taskId may reference a PlanTask (lesson/milestone in
+/// planJson) or a ReviewInstance.id. One row per (planId, taskId).
+model TaskJournal {
+  id        String   @id @default(cuid())
+  planId    String
+  taskId    String
+  body      String   @default("")
+  /// Persisted Fern chat history — JSON array of `{role: "user"|"fern", content: string}`.
+  /// Bounded to the last 3 turns (≤ 6 messages) by the chat API on each write.
+  /// Goal is continuity on re-open, not a learning record — the journal `body` above
+  /// is the persistent record.
+  chatJson  String   @default("[]")
+  /// Persisted "Ask Fern to expand" cards — JSON array of `{id, presetId, content, createdAt}`.
+  /// Bounded to the last 3 cards by the deepen API on each write. Mirrors `chatJson`
+  /// semantics: continuity across reloads, not infinite history. Users can dismiss
+  /// individual cards (DELETE …?cardId=…) or clear all (DELETE).
+  deepenJson String  @default("[]")
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  plan LearningPlan @relation(fields: [planId], references: [id], onDelete: Cascade)
+
+  @@unique([planId, taskId])
+  @@index([planId])
+}
+
+/// Singleton counter for total sprouts ever created on the landing page.
+/// Increments only — never decrements when a user deletes their plan.
+/// Always queried with `id = 1`.
+model SproutCounter {
+  id    Int @id @default(1)
+  total Int @default(0)
+}

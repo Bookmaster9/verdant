@@ -1,0 +1,135 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<title>Verdant — hero</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"/>
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin/>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,300..700;1,9..144,300..700&family=JetBrains+Mono:wght@400;500&family=Caveat:wght@400;600&display=swap" rel="stylesheet"/>
+<link rel="stylesheet" href="../verdant.css"/>
+<style>
+  body { background:#ddd2b3; }
+  .canvas {
+    background:
+      radial-gradient(circle at 18% 22%, rgba(255,255,255,0.6) 0%, transparent 38%),
+      radial-gradient(circle at 82% 78%, rgba(216,230,181,0.4) 0%, transparent 42%),
+      radial-gradient(circle at 50% 50%, var(--paper-warm) 0%, var(--paper) 70%);
+    position: relative; overflow: hidden;
+    border: 1.5px solid var(--ink); box-shadow: 6px 6px 0 var(--ink);
+    border-radius: 18px;
+  }
+  .canvas::before {
+    content: ""; position: absolute; inset: 0;
+    background-image: radial-gradient(circle, rgba(43,36,24,0.10) 1px, transparent 1.4px);
+    background-size: 22px 22px; pointer-events: none; opacity: 0.55;
+  }
+  .deco { position: absolute; pointer-events: none; }
+  #hero {
+    width: 1500px; height: 500px;
+    display: grid; grid-template-columns: 1.4fr 1fr;
+    align-items: center; padding: 0 80px;
+  }
+  #hero .lockup { z-index: 2; }
+  #hero h1 {
+    font-family: "Fraunces", serif;
+    font-size: 124px; font-weight: 400;
+    letter-spacing: -0.03em; margin: 0;
+    line-height: 0.95; color: var(--ink);
+    font-variation-settings: '"opsz" 144';
+  }
+  #hero .word { display: inline-flex; align-items: center; gap: 10px; }
+  #hero .tagline {
+    font-family: "Fraunces", serif; font-style: italic;
+    font-size: 30px; color: var(--ink-soft);
+    margin-top: 18px; line-height: 1.25; max-width: 640px;
+  }
+  #hero .meta { margin-top: 26px; display: flex; gap: 14px; flex-wrap: wrap; }
+  #hero .chip {
+    font-family: "JetBrains Mono", monospace;
+    font-size: 12px; letter-spacing: 0.06em;
+    background: var(--paper); border: 1.5px solid var(--ink);
+    border-radius: 999px; padding: 6px 14px;
+    box-shadow: 2px 2px 0 var(--ink);
+  }
+  #hero .scene { position: relative; height: 100%; }
+</style>
+</head>
+<body style="margin:0; padding:0; background:#ddd2b3; width:924px; height:308px; overflow:hidden;">
+<div style="width:1500px; height:500px; transform: scale(0.616); transform-origin: top left;">
+  <div class="canvas" id="hero">
+    <svg class="deco" style="left:-30px; top:-20px; opacity:0.5;" width="160" height="160" viewBox="0 0 100 100">
+      <g fill="#88a755" opacity="0.5">
+        <path d="M50 90 Q 30 60, 30 30 Q 50 10, 70 30 Q 70 60, 50 90 Z"/>
+      </g>
+    </svg>
+    <svg class="deco" style="right:60px; top:30px;" width="80" height="80" viewBox="0 0 100 100">
+      <circle cx="50" cy="50" r="22" fill="#e9c46a" stroke="#2b2418" stroke-width="2"/>
+      <g stroke="#2b2418" stroke-width="2" fill="none" stroke-linecap="round">
+        <line x1="50" y1="14" x2="50" y2="22"/>
+        <line x1="50" y1="78" x2="50" y2="86"/>
+        <line x1="14" y1="50" x2="22" y2="50"/>
+        <line x1="78" y1="50" x2="86" y2="50"/>
+        <line x1="24" y1="24" x2="30" y2="30"/>
+        <line x1="70" y1="70" x2="76" y2="76"/>
+        <line x1="76" y1="24" x2="70" y2="30"/>
+        <line x1="24" y1="76" x2="30" y2="70"/>
+      </g>
+    </svg>
+
+    <div class="lockup">
+      <h1>
+        <span class="word">
+          <svg width="84" height="120" viewBox="0 0 60 80">
+            <ellipse cx="30" cy="74" rx="22" ry="4" fill="#2b2418" opacity="0.18"/>
+            <path d="M14 70 L46 70 L42 60 L18 60 Z" fill="#8b6f4a" stroke="#2b2418" stroke-width="1.5"/>
+            <line x1="30" y1="60" x2="30" y2="36" stroke="#3d5524" stroke-width="2.5" stroke-linecap="round"/>
+            <path d="M30 50 Q 14 46, 14 32 Q 26 30, 30 50" fill="#88a755" stroke="#2b2418" stroke-width="1.5"/>
+            <path d="M30 42 Q 46 38, 46 24 Q 32 22, 30 42" fill="#5d7a3a" stroke="#2b2418" stroke-width="1.5"/>
+            <circle cx="30" cy="30" r="6" fill="#b5cf7a" stroke="#2b2418" stroke-width="1.5"/>
+          </svg>
+          Verdant
+        </span>
+      </h1>
+      <p class="tagline">a garden journal for learning anything —<br/>your goals, plotted onto your calendar, tended by Fern.</p>
+      <div class="meta">
+        <span class="chip">calendar-native</span>
+        <span class="chip">ai lesson plans</span>
+        <span class="chip">tutored by fern</span>
+      </div>
+    </div>
+
+    <div class="scene">
+      <svg width="300" height="300" viewBox="0 0 100 100" style="position:absolute; right:30px; top:50%; transform: translateY(-50%);">
+        <ellipse cx="50" cy="92" rx="28" ry="3" fill="#2b2418" opacity="0.15"/>
+        <ellipse cx="50" cy="62" rx="26" ry="28" fill="#88a755" stroke="#2b2418" stroke-width="1.5"/>
+        <ellipse cx="50" cy="68" rx="14" ry="14" fill="#b5cf7a" opacity="0.7"/>
+        <path d="M40 36 Q 30 22, 36 14 Q 46 18, 44 34" fill="#5d7a3a" stroke="#2b2418" stroke-width="1.5"/>
+        <path d="M58 36 Q 70 22, 64 14 Q 54 18, 56 34" fill="#3d5524" stroke="#2b2418" stroke-width="1.5"/>
+        <ellipse cx="42" cy="58" rx="2.5" ry="3.5" fill="#2b2418"/>
+        <ellipse cx="58" cy="58" rx="2.5" ry="3.5" fill="#2b2418"/>
+        <ellipse cx="43" cy="56" rx="0.8" ry="1.2" fill="#fff"/>
+        <ellipse cx="59" cy="56" rx="0.8" ry="1.2" fill="#fff"/>
+        <ellipse cx="38" cy="66" rx="3" ry="2" fill="#e29886" opacity="0.6"/>
+        <ellipse cx="62" cy="66" rx="3" ry="2" fill="#e29886" opacity="0.6"/>
+        <path d="M46 66 Q 50 70, 54 66" stroke="#2b2418" stroke-width="1.4" fill="none" stroke-linecap="round"/>
+      </svg>
+
+      <svg style="position:absolute; right: 220px; top: 30%;" width="40" height="40" viewBox="0 0 60 60">
+        <path d="M30 50 Q 14 38, 14 22 Q 28 14, 36 24 Q 38 40, 30 50 Z" fill="#88a755" stroke="#2b2418" stroke-width="1.5"/>
+        <line x1="22" y1="30" x2="32" y2="40" stroke="#2b2418" stroke-width="1" opacity="0.5"/>
+      </svg>
+      <svg style="position:absolute; right: 0px; top: 18%;" width="32" height="32" viewBox="0 0 60 60">
+        <path d="M30 50 Q 14 38, 14 22 Q 28 14, 36 24 Q 38 40, 30 50 Z" fill="#5d7a3a" stroke="#2b2418" stroke-width="1.5" transform="rotate(40 30 30)"/>
+      </svg>
+      <svg style="position:absolute; right: 250px; bottom: 30px;" width="28" height="28" viewBox="0 0 60 60">
+        <path d="M30 50 Q 14 38, 14 22 Q 28 14, 36 24 Q 38 40, 30 50 Z" fill="#b5cf7a" stroke="#2b2418" stroke-width="1.5" transform="rotate(-30 30 30)"/>
+      </svg>
+
+      <div style="position:absolute; right: 20px; bottom: 14px; font-family: 'Caveat', cursive; font-size: 26px; color: var(--ink-soft); transform: rotate(-4deg);">
+        ~ tend it daily ~
+      </div>
+    </div>
+  </div>
+</div>
+</body>
+</html>
