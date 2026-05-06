@@ -3,6 +3,7 @@ import { ensureUserPreferences } from "@/lib/user";
 import { PrimaryNav } from "./verdant/PrimaryNav";
 import { PlantHelper } from "./verdant/PlantHelper";
 import { FooterStrip } from "./verdant/FooterStrip";
+import { LegalLinks } from "./verdant/LegalLinks";
 
 export async function Shell({
   children,
@@ -26,6 +27,7 @@ export async function Shell({
       <PrimaryNav signedIn={signedIn} user={user} pushToCalendar={pushToCalendar} />
       <main>{children}</main>
       {signedIn && showFooter && <FooterStrip />}
+      <LegalLinks />
       {signedIn && showHelper && <PlantHelper />}
     </div>
   );
