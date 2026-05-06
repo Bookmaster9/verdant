@@ -1,6 +1,7 @@
 import { auth } from "@/auth";
 import { prisma } from "@/lib/db";
 import { defaultTimeWindowsJson } from "@/lib/default-preferences";
+import { ensureUserPreferences } from "@/lib/user";
 import { NextResponse } from "next/server";
 import { z } from "zod";
 
@@ -32,17 +33,7 @@ export async function GET() {
   if (!s?.user?.id) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
-  const pref = await prisma.userPreference.findUnique({ where: { userId: s.user.id } });
-  if (!pref) {
-    const p = await prisma.userPreference.create({
-      data: {
-        userId: s.user.id,
-        timeWindows: defaultTimeWindowsJson(),
-        maxMinutesDay: 90,
-      },
-    });
-    return NextResponse.json(p);
-  }
+  const pref = await ensureUserPreferences(s.user.id);
   return NextResponse.json(pref);
 }
 
