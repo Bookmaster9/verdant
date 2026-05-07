@@ -76,6 +76,10 @@ function clipToTimelineBand(start: Date, end: Date): { start: Date; end: Date } 
   };
 }
 
+// Dashboard's "Today's plot" sources Verdant + calendar events live; force
+// dynamic so a schedule mutation elsewhere is reflected on the next visit.
+export const dynamic = "force-dynamic";
+
 export default async function DashboardPage() {
   const s = await auth();
   if (!s?.user?.id) {

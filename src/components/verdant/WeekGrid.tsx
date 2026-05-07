@@ -12,8 +12,8 @@ import type { TaskType, TimeWindows } from "@/types/plan";
 import { ConflictResolveModal } from "@/components/verdant/ConflictResolveModal";
 
 const HOUR_PX = 36;
-const FIRST_HOUR = 5;
-const LAST_HOUR = 24; // exclusive — show 5a..midnight (19 rows)
+const FIRST_HOUR = 0;
+const LAST_HOUR = 24; // exclusive — show 12a..midnight (24 rows)
 const HOURS = Array.from({ length: LAST_HOUR - FIRST_HOUR }).map(
   (_, i) => FIRST_HOUR + i
 );

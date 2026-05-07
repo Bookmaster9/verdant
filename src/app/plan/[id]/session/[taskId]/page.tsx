@@ -105,6 +105,11 @@ function parseDeepenCards(json: string): PersistedDeepenCard[] {
   }
 }
 
+// Session state mutates whenever the user marks done / re-rates / re-opens.
+// Force-dynamic so the page never serves stale TaskCompletion / ReviewInstance
+// data after a sibling edit elsewhere.
+export const dynamic = "force-dynamic";
+
 export default async function SessionDetailPage({
   params,
 }: {

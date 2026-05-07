@@ -17,9 +17,15 @@ import { displayTitle } from "@/lib/phase";
 import { ScheduleHeader } from "./ScheduleHeader";
 import { ScheduleClient } from "./ScheduleClient";
 
+// Schedule state mutates from the sprout page (regenerate / rebalance /
+// reoptimize / NL edits / move-session). Force this route dynamic so a
+// navigation here always re-renders against the latest scheduleJson rather
+// than potentially serving a cached RSC payload from before the mutation.
+export const dynamic = "force-dynamic";
+
 type SearchParams = Promise<{ w?: string }>;
 
-const VISIBLE_FIRST_HOUR = 5; // matches WeekGrid
+const VISIBLE_FIRST_HOUR = 0; // matches WeekGrid
 const VISIBLE_LAST_HOUR = 24;
 
 function dayIndexMonZero(d: Date): number {

@@ -17,6 +17,11 @@ import { StarRating } from "@/components/verdant/StarRating";
 import { AiPlanDisclosure } from "@/components/verdant/AiPlanDisclosure";
 import { displayTitle, phaseForWeek } from "@/lib/phase";
 
+// Plan view aggregates schedule + completions + ReviewInstance state, all of
+// which mutate from buttons on this page and from /schedule. Force-dynamic
+// so each navigation reflects the latest DB state.
+export const dynamic = "force-dynamic";
+
 export default async function PlanPage({
   params,
 }: {
