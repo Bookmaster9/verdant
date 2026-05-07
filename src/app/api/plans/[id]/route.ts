@@ -36,6 +36,12 @@ const patch = z.object({
   lockSession: z
     .object({ sessionId: z.string(), locked: z.boolean() })
     .optional(),
+  /**
+   * One-shot operation: drop the `locked` flag on every future session in
+   * this plan. Used by the "clear locks" button on the plan page so a stack
+   * of pinned sessions doesn't permanently constrain rebalance/reoptimize.
+   */
+  clearLocks: z.boolean().optional(),
   freeformNote: z.string().max(2000).nullable().optional(),
   /** Rebuild the schedule from the existing planJson tasks via the scoring packer. Recovery action. */
   rebuildSchedule: z.boolean().optional(),
@@ -232,6 +238,17 @@ export async function PATCH(request: Request, { params }: RouteParams) {
         : sess
     );
     outSchedule = JSON.stringify(next);
+  }
+  if (p.data.clearLocks) {
+    const sessions = JSON.parse(outSchedule || "[]") as ScheduledSession[];
+    const nowAt = new Date();
+    const next = sessions.map((sess) =>
+      new Date(sess.start) >= nowAt && sess.locked
+        ? { ...sess, locked: false }
+        : sess
+    );
+    outSchedule = JSON.stringify(next);
+    if (!editSummary) editSummary = "Cleared all locked sessions.";
   }
   // Direct rule replacement (settings UI uses this to delete individual rules).
   // Reflows the future schedule against the new rule set so removing a forbid

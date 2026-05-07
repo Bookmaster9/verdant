@@ -135,9 +135,27 @@ export async function POST(request: Request, { params }: RouteParams) {
 
   const sproutOut = JSON.parse(nextPlanJson) as SproutPlan;
   const oldSchedule = JSON.parse(plan.scheduleJson || "[]") as ScheduledSession[];
-  const lockedFuture = oldSchedule.filter(
+  // Regenerate may drop / rename plan tasks. A locked session whose planTaskId
+  // no longer exists in the new plan is an orphan — keeping it would leak a
+  // dangling reference into the road ahead. Filter the lock set down to those
+  // tasks that survived the regen.
+  const survivingTaskIds = new Set(
+    (sproutOut.tasks ?? []).map((t) => t.id)
+  );
+  const reviewIdRows = await prisma.reviewInstance.findMany({
+    where: { planId: id },
+    select: { id: true },
+  });
+  for (const r of reviewIdRows) survivingTaskIds.add(r.id);
+  const lockedFutureRaw = oldSchedule.filter(
     (sess) => new Date(sess.start) >= startDate && sess.locked
   );
+  const lockedFuture = lockedFutureRaw.filter((sess) => {
+    if (sess.agenda && sess.agenda.length > 0) {
+      return sess.agenda.some((a) => survivingTaskIds.has(a.planTaskId));
+    }
+    return survivingTaskIds.has(sess.planTaskId);
+  });
   const placedTaskIds = new Set<string>();
   for (const sess of lockedFuture) {
     if (sess.agenda) for (const a of sess.agenda) placedTaskIds.add(a.planTaskId);

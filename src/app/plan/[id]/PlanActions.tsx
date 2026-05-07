@@ -122,6 +122,28 @@ export function PlanActions({
     setBusy(false);
   }
 
+  async function clearLocks() {
+    setBusy(true);
+    setErr(null);
+    setMessage(null);
+    const res = await fetch(`/api/plans/${planId}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ clearLocks: true }),
+    });
+    const j = (await res.json().catch(() => ({}))) as {
+      error?: string;
+      summary?: string;
+    };
+    if (!res.ok) {
+      setErr(j.error || "Couldn't clear locks");
+    } else {
+      setMessage(j.summary || "Cleared locked sessions.");
+      r.refresh();
+    }
+    setBusy(false);
+  }
+
   async function regenerate(revert = false) {
     if (
       !revert &&
@@ -240,6 +262,15 @@ export function PlanActions({
             title="Re-pack future tasks against your current learned preferences. Locked sessions stay put."
           >
             re-optimize
+          </button>
+          <button
+            type="button"
+            onClick={clearLocks}
+            disabled={busy}
+            className="btn sm ghost"
+            title="Drop the lock flag from every pinned future session so the next rebalance/re-optimize can move them."
+          >
+            clear locks
           </button>
           <button
             type="button"
