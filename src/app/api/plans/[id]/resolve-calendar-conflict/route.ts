@@ -50,6 +50,7 @@ async function repackAfterRemovingSession(
   accessToken: string | undefined
 ): Promise<{ scheduleJson: string; summary: string }> {
   const pref = await ensureUserPreferences(userId);
+  const tz = pref.userTimeZone || "UTC";
   const tw = parseTimeWindowsJson(pref.timeWindows);
   const hourUtility = parseHourUtility(pref.hourUtility);
   const sproutPlan = JSON.parse(plan.planJson || "{}") as SproutPlan;
@@ -87,7 +88,7 @@ async function repackAfterRemovingSession(
       from: now,
       to: new Date(plan.deadline.getTime() + 864e5),
     }),
-    loadCrossPlanBusy({ userId, excludePlanId: planId }),
+    loadCrossPlanBusy({ userId, excludePlanId: planId, tz }),
   ]);
   const externalBusy = calRead.intervals;
   const lockedAsBusy = lockedFuture.map((sess) => ({
@@ -118,6 +119,7 @@ async function repackAfterRemovingSession(
     hourUtility,
     now,
     planId,
+    tz,
     initialDailyMinutesUsed: crossPlan.initialDailyMinutesUsed,
     placementRules: persistentRules,
     phaseCount: (sproutPlan.phases ?? []).length,
@@ -161,6 +163,7 @@ export async function POST(request: Request, { params }: RouteParams) {
   }
 
   const pref = await ensureUserPreferences(s.user.id);
+  const tz = pref.userTimeZone || "UTC";
   const tw = parseTimeWindowsJson(pref.timeWindows);
   const deadlineEnd = new Date(plan.deadline.getTime() + 864e5);
   const now = new Date();
@@ -174,7 +177,7 @@ export async function POST(request: Request, { params }: RouteParams) {
         to: deadlineEnd,
         noCache: true,
       }),
-      loadCrossPlanBusy({ userId: s.user.id, excludePlanId: id }),
+      loadCrossPlanBusy({ userId: s.user.id, excludePlanId: id, tz }),
     ]);
     const externalBusy = calRead.intervals;
     const blackoutBusy = blackoutsToBusy(
@@ -204,7 +207,8 @@ export async function POST(request: Request, { params }: RouteParams) {
       durationMin,
       tw,
       deadlineEnd,
-      busy
+      busy,
+      tz
     );
     if (!slot) {
       return NR.json(

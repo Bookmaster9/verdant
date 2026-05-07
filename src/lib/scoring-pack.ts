@@ -29,7 +29,6 @@
  * topological layer, so explicit user preferences and review schedules win
  * the contention they need.
  */
-import { addDays, getDay, startOfDay } from "date-fns";
 import type {
   PlacementRule,
   PlanTask,
@@ -46,6 +45,13 @@ import {
   readUtilityForSlot,
   type HourUtilityMap,
 } from "@/lib/hour-utility";
+import {
+  addDaysInTz,
+  dowMonZeroInTz,
+  hourInTz,
+  startOfDayInTz,
+  ymdInTz,
+} from "@/lib/tz";
 
 export interface ScoringContext {
   startDate: Date;
@@ -57,6 +63,13 @@ export interface ScoringContext {
   hourUtility: HourUtilityMap;
   /** "Now" timestamp used for decay-on-read against `hourUtility`. */
   now: Date;
+  /**
+   * IANA timezone for all wall-clock and day-boundary arithmetic. Without
+   * this, day-of-week and time-of-day comparisons silently use the server's
+   * local zone (UTC on Vercel) and the user's "07:00 window" lands at 07:00
+   * UTC = 03:00 EDT.
+   */
+  tz: string;
   /**
    * Stable identifier used to seed the per-task RNG. Same `planId` + same task
    * id = same softmax sample, so re-packs with unchanged inputs reproduce.
@@ -114,12 +127,8 @@ function clampDur(task: PlanTask, ctx: ScoringContext): number {
   return Math.max(15, Math.min(task.minutes, ctx.maxMinutesPerDay));
 }
 
-function dayKey(d: Date): string {
-  return startOfDay(d).toISOString().slice(0, 10);
-}
-
-function dowMonZero(d: Date): number {
-  return (getDay(d) + 6) % 7; // 0=Mon
+function dayKey(d: Date, tz: string): string {
+  return ymdInTz(d, tz);
 }
 
 // -----------------------------------------------------------------------------
@@ -214,13 +223,13 @@ function enumerateCandidates(
 ): Candidate[] {
   const dur = clampDur(task, ctx);
   const candidates: Candidate[] = [];
-  let cursor = startOfDay(earliestStart);
-  const end = startOfDay(ctx.deadline);
+  let cursor = startOfDayInTz(earliestStart, ctx.tz);
+  const end = startOfDayInTz(ctx.deadline, ctx.tz);
   for (let d = 0; d < PLAN_DAY_LIMIT; d++) {
     if (cursor > end) break;
-    const usedToday = dailyMinutesUsed.get(dayKey(cursor)) ?? 0;
+    const usedToday = dailyMinutesUsed.get(dayKey(cursor, ctx.tz)) ?? 0;
     if (usedToday + dur <= ctx.maxMinutesPerDay) {
-      const frags = freeIntervalsForDay(cursor, ctx.timeWindows, busy);
+      const frags = freeIntervalsForDay(cursor, ctx.timeWindows, busy, ctx.tz);
       for (const frag of frags) {
         let slotStart = frag.start;
         if (slotStart < earliestStart) slotStart = earliestStart;
@@ -235,7 +244,7 @@ function enumerateCandidates(
         });
       }
     }
-    cursor = addDays(cursor, 1);
+    cursor = addDaysInTz(cursor, 1, ctx.tz);
   }
   return candidates;
 }
@@ -249,10 +258,10 @@ function enumerateCandidates(
  * the legacy weights (was ±8 / −2) because learned hour-utility now carries
  * the same kind of preference signal more directly.
  */
-function todMatchScore(task: PlanTask, slot: Candidate): number {
+function todMatchScore(task: PlanTask, slot: Candidate, tz: string): number {
   const tod = task.preferredTimeOfDay ?? "any";
   if (tod === "any") return 0;
-  const hr = slot.start.getHours();
+  const hr = hourInTz(slot.start, tz);
   const isMorning = hr < 12;
   const isAfternoon = hr >= 12 && hr < 17;
   const isEvening = hr >= 17;
@@ -268,15 +277,16 @@ function todMatchScore(task: PlanTask, slot: Candidate): number {
 
 function idealWeekScore(task: PlanTask, slot: Candidate, ctx: ScoringContext): number {
   const slotWeek = Math.floor(
-    (startOfDay(slot.start).getTime() - startOfDay(ctx.startDate).getTime()) /
+    (startOfDayInTz(slot.start, ctx.tz).getTime() -
+      startOfDayInTz(ctx.startDate, ctx.tz).getTime()) /
       (7 * 86_400_000)
   );
   const delta = Math.abs(slotWeek - task.weekIndex);
   return Math.max(0, 10 - delta * 5);
 }
 
-function idealDayScore(task: PlanTask, slot: Candidate): number {
-  const slotDow = dowMonZero(slot.start);
+function idealDayScore(task: PlanTask, slot: Candidate, tz: string): number {
+  const slotDow = dowMonZeroInTz(slot.start, tz);
   const delta = Math.abs(slotDow - task.dayOffsetInWeek);
   return Math.max(0, 6 - delta * 2);
 }
@@ -298,10 +308,11 @@ function dueAtProximityScore(task: PlanTask, slot: Candidate): number {
 function standaloneScore(
   task: PlanTask,
   slot: Candidate,
-  dailyMinutesUsed: Map<string, number>
+  dailyMinutesUsed: Map<string, number>,
+  tz: string
 ): number {
   if (!task.preferStandalone) return 0;
-  const used = dailyMinutesUsed.get(dayKey(slot.start)) ?? 0;
+  const used = dailyMinutesUsed.get(dayKey(slot.start, tz)) ?? 0;
   return used === 0 ? 4 : -6;
 }
 
@@ -323,10 +334,10 @@ function taskStructuralScore(
   dailyMinutesUsed: Map<string, number>
 ): number {
   return (
-    todMatchScore(task, slot) +
+    todMatchScore(task, slot, ctx.tz) +
     idealWeekScore(task, slot, ctx) +
-    idealDayScore(task, slot) +
-    standaloneScore(task, slot, dailyMinutesUsed) +
+    idealDayScore(task, slot, ctx.tz) +
+    standaloneScore(task, slot, dailyMinutesUsed, ctx.tz) +
     dueAtProximityScore(task, slot)
   );
 }
@@ -423,11 +434,12 @@ function pickCandidate(
 // -----------------------------------------------------------------------------
 
 function mergeIntoDailyAgendas(
-  placements: PlacementRecord[]
+  placements: PlacementRecord[],
+  tz: string
 ): ScheduledSession[] {
   const byDay = new Map<string, PlacementRecord[]>();
   for (const p of placements) {
-    const k = dayKey(p.start);
+    const k = dayKey(p.start, tz);
     const list = byDay.get(k);
     if (list) list.push(p);
     else byDay.set(k, [p]);
@@ -528,6 +540,8 @@ export function packIntoExistingSchedule(args: {
   hourUtility: HourUtilityMap;
   now: Date;
   planId: string;
+  /** IANA timezone — see ScoringContext.tz. */
+  tz: string;
   /**
    * Optional pre-existing per-day minutes from sources outside `existingSchedule`
    * — typically OTHER active plans' schedules (multi-sprout shared-cap support).
@@ -548,7 +562,7 @@ export function packIntoExistingSchedule(args: {
     const start = new Date(sess.start);
     const end = new Date(sess.end);
     const minutes = Math.max(0, (end.getTime() - start.getTime()) / 60_000);
-    const k = dayKey(start);
+    const k = dayKey(start, args.tz);
     initialDailyMinutesUsed.set(k, (initialDailyMinutesUsed.get(k) ?? 0) + minutes);
   }
 
@@ -561,6 +575,7 @@ export function packIntoExistingSchedule(args: {
     hourUtility: args.hourUtility,
     now: args.now,
     planId: args.planId,
+    tz: args.tz,
     initialDailyMinutesUsed,
     placementRules: args.placementRules,
     phaseCount: args.phaseCount,
@@ -594,7 +609,7 @@ export function packWithScoring(
       const pred = placedById.get(task.mustFollowTaskId);
       if (pred) {
         const minDays = task.minDaysAfterPredecessor ?? 0;
-        const after = addDays(startOfDay(pred.end), minDays);
+        const after = addDaysInTz(startOfDayInTz(pred.end, ctx.tz), minDays, ctx.tz);
         if (after > earliest) earliest = after;
       }
     }
@@ -618,7 +633,7 @@ export function packWithScoring(
     const best = candidates[pickedIdx];
     placedById.set(task.id, { task, start: best.start, end: best.end });
     placedBusy.push({ start: best.start, end: best.end });
-    const k = dayKey(best.start);
+    const k = dayKey(best.start, ctx.tz);
     dailyMinutesUsed.set(
       k,
       (dailyMinutesUsed.get(k) ?? 0) + best.durationMinutes
@@ -626,7 +641,7 @@ export function packWithScoring(
   }
 
   return {
-    schedule: mergeIntoDailyAgendas(Array.from(placedById.values())),
+    schedule: mergeIntoDailyAgendas(Array.from(placedById.values()), ctx.tz),
     overflow,
   };
 }

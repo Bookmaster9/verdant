@@ -12,7 +12,8 @@
  * the scoring packer; this module's job is to translate AI intent into
  * packer inputs, not to re-implement constraint solving.
  */
-import { parseISO, startOfDay } from "date-fns";
+import { parseISO } from "date-fns";
+import { startOfDayInTz } from "@/lib/tz";
 import type {
   PlacementRule,
   PlanTask,
@@ -44,6 +45,8 @@ export interface ApplyContext {
   now: Date;
   /** Stable plan id for RNG seeding inside the packer. */
   planId: string;
+  /** IANA timezone — see ScoringContext.tz. */
+  tz: string;
   /**
    * Persistent placement rules already saved on the plan. Merged with any new
    * rules emitted by this edit before the packer runs. Persisting new rules
@@ -250,8 +253,9 @@ export function applyEditOps(
       startDate: ctx.startDate,
       deadline: ctx.deadline,
     });
+    const repackStartSod = startOfDayInTz(fromDate, ctx.tz);
     const repackStart =
-      startOfDay(fromDate) > ctx.startDate ? startOfDay(fromDate) : ctx.startDate;
+      repackStartSod > ctx.startDate ? repackStartSod : ctx.startDate;
 
     const result = packWithScoring(tasksToRepack, {
       startDate: repackStart,
@@ -262,6 +266,7 @@ export function applyEditOps(
       hourUtility: ctx.hourUtility,
       now: ctx.now,
       planId: ctx.planId,
+      tz: ctx.tz,
       placementRules: effectiveRules,
       phaseCount: plan.phases.length,
     });

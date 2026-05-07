@@ -178,6 +178,7 @@ export async function PATCH(request: Request, { params }: RouteParams) {
       return NextResponse.json({ error: message }, { status: 400 });
     }
     const pref = await ensureUserPreferences(s.user.id);
+    const tz = pref.userTimeZone || "UTC";
     const tw = parseTimeWindowsJson(pref.timeWindows);
     const hourUtility = parseHourUtility(pref.hourUtility);
     const [calRead, crossPlan] = await Promise.all([
@@ -187,7 +188,7 @@ export async function PATCH(request: Request, { params }: RouteParams) {
         from: now,
         to: new Date(plan.deadline.getTime() + 864e5),
       }),
-      loadCrossPlanBusy({ userId: s.user.id, excludePlanId: id }),
+      loadCrossPlanBusy({ userId: s.user.id, excludePlanId: id, tz }),
     ]);
     const externalBusy = calRead.intervals;
     const persistentRules = parsePlacementRules(plan.placementRules);
@@ -208,6 +209,7 @@ export async function PATCH(request: Request, { params }: RouteParams) {
       hourUtility,
       now,
       planId: id,
+      tz,
       persistentRules,
       projectedReviews,
       completedTaskIds,
@@ -255,6 +257,7 @@ export async function PATCH(request: Request, { params }: RouteParams) {
   // rule frees up its window and removing a prefer rule lets the packer rescore.
   if (p.data.placementRules) {
     const pref = await ensureUserPreferences(s.user.id);
+    const tz = pref.userTimeZone || "UTC";
     const tw = parseTimeWindowsJson(pref.timeWindows);
     const hourUtility = parseHourUtility(pref.hourUtility);
     const sessions = JSON.parse(outSchedule || "[]") as ScheduledSession[];
@@ -267,7 +270,7 @@ export async function PATCH(request: Request, { params }: RouteParams) {
         from: now,
         to: new Date(plan.deadline.getTime() + 864e5),
       }),
-      loadCrossPlanBusy({ userId: s.user.id, excludePlanId: id }),
+      loadCrossPlanBusy({ userId: s.user.id, excludePlanId: id, tz }),
     ]);
     const externalBusy = calRead.intervals;
     const newRules = p.data.placementRules as PlacementRule[];
@@ -316,6 +319,7 @@ export async function PATCH(request: Request, { params }: RouteParams) {
       hourUtility,
       now,
       planId: id,
+      tz,
       placementRules: newRules,
       phaseCount: (sproutPlan.phases ?? []).length,
     });
@@ -334,6 +338,7 @@ export async function PATCH(request: Request, { params }: RouteParams) {
     outManualBlackouts = JSON.stringify(p.data.manualBlackouts);
     if (!p.data.rescheduleFrom) {
       const pref = await ensureUserPreferences(s.user.id);
+      const tz = pref.userTimeZone || "UTC";
       const tw = parseTimeWindowsJson(pref.timeWindows);
       const sessions = JSON.parse(outSchedule || "[]") as ScheduledSession[];
       const from = new Date();
@@ -344,7 +349,7 @@ export async function PATCH(request: Request, { params }: RouteParams) {
           from,
           to: new Date(plan.deadline.getTime() + 864e5),
         }),
-        loadCrossPlanBusy({ userId: s.user.id, excludePlanId: id }),
+        loadCrossPlanBusy({ userId: s.user.id, excludePlanId: id, tz }),
       ]);
       const externalBusy = calRead.intervals;
       const blackoutBusy = blackoutsToBusy(p.data.manualBlackouts as ManualBlackout[]);
@@ -354,13 +359,15 @@ export async function PATCH(request: Request, { params }: RouteParams) {
         new Date(plan.deadline.getTime() + 864e5),
         tw,
         pref.maxMinutesDay,
-        [...externalBusy, ...crossPlan.busy, ...blackoutBusy]
+        [...externalBusy, ...crossPlan.busy, ...blackoutBusy],
+        tz
       );
       outSchedule = JSON.stringify(rescheduled);
     }
   }
   if (p.data.rescheduleFrom) {
     const pref = await ensureUserPreferences(s.user.id);
+    const tz = pref.userTimeZone || "UTC";
     const tw = parseTimeWindowsJson(pref.timeWindows);
     const sessions = JSON.parse(outSchedule || "[]") as ScheduledSession[];
     const from = new Date(p.data.rescheduleFrom);
@@ -371,7 +378,7 @@ export async function PATCH(request: Request, { params }: RouteParams) {
         from,
         to: new Date(plan.deadline.getTime() + 864e5),
       }),
-      loadCrossPlanBusy({ userId: s.user.id, excludePlanId: id }),
+      loadCrossPlanBusy({ userId: s.user.id, excludePlanId: id, tz }),
     ]);
     const externalBusy = busyRead.intervals;
     const blackoutsJson = outManualBlackouts ?? plan.manualBlackouts;
@@ -382,7 +389,8 @@ export async function PATCH(request: Request, { params }: RouteParams) {
       new Date(plan.deadline.getTime() + 864e5),
       tw,
       pref.maxMinutesDay,
-      [...externalBusy, ...crossPlan.busy, ...blackoutBusy]
+      [...externalBusy, ...crossPlan.busy, ...blackoutBusy],
+      tz
     );
     outSchedule = JSON.stringify(rescheduled);
   }
@@ -391,6 +399,7 @@ export async function PATCH(request: Request, { params }: RouteParams) {
   // LLM. Preserves locked future sessions and packs everything else.
   if (p.data.rebuildSchedule) {
     const pref = await ensureUserPreferences(s.user.id);
+    const tz = pref.userTimeZone || "UTC";
     const tw = parseTimeWindowsJson(pref.timeWindows);
     const hourUtility = parseHourUtility(pref.hourUtility);
     const sproutPlan = JSON.parse(plan.planJson || "{}") as SproutPlan;
@@ -423,7 +432,7 @@ export async function PATCH(request: Request, { params }: RouteParams) {
         from: now,
         to: new Date(plan.deadline.getTime() + 864e5),
       }),
-      loadCrossPlanBusy({ userId: s.user.id, excludePlanId: id }),
+      loadCrossPlanBusy({ userId: s.user.id, excludePlanId: id, tz }),
     ]);
     const externalBusy = calRead.intervals;
     const lockedAsBusy = lockedFuture.map((sess) => ({
@@ -452,6 +461,7 @@ export async function PATCH(request: Request, { params }: RouteParams) {
       hourUtility,
       now,
       planId: id,
+      tz,
       initialDailyMinutesUsed: crossPlan.initialDailyMinutesUsed,
       placementRules: persistentRules,
       phaseCount: (sproutPlan.phases ?? []).length,

@@ -14,11 +14,12 @@
 import { prisma } from "@/lib/db";
 import type { ScheduledSession } from "@/types/plan";
 import type { BusyInterval } from "@/lib/calendar-read";
+import { ymdInTz } from "@/lib/tz";
 
 export interface CrossPlanBusy {
   /** Each session from every OTHER active plan, shaped as a busy interval. */
   busy: BusyInterval[];
-  /** Per-day minutes already consumed by other plans. Keyed by ISO YYYY-MM-DD. */
+  /** Per-day minutes already consumed by other plans. Keyed by user-tz YYYY-MM-DD. */
   initialDailyMinutesUsed: Map<string, number>;
 }
 
@@ -28,10 +29,14 @@ export interface CrossPlanBusy {
  *
  * Pass `excludePlanId = null` (or omit) when there's no current plan to skip
  * (e.g. during plan creation — the new plan doesn't exist in the DB yet).
+ *
+ * `tz` keys the per-day map by the user's local calendar day rather than UTC,
+ * matching the scheduler's `dayKey` so both maps merge correctly.
  */
 export async function loadCrossPlanBusy(args: {
   userId: string;
   excludePlanId?: string | null;
+  tz: string;
 }): Promise<CrossPlanBusy> {
   const others = await prisma.learningPlan.findMany({
     where: {
@@ -53,7 +58,7 @@ export async function loadCrossPlanBusy(args: {
       const start = new Date(sess.start);
       const end = new Date(sess.end);
       busy.push({ start, end });
-      const k = start.toISOString().slice(0, 10);
+      const k = ymdInTz(start, args.tz);
       const minutes = Math.max(0, (end.getTime() - start.getTime()) / 60_000);
       initialDailyMinutesUsed.set(
         k,

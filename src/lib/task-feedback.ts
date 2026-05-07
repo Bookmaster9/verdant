@@ -125,6 +125,7 @@ export async function applyTaskFeedback(args: {
   }
 
   let _ctx: {
+    tz: string;
     timeWindows: ReturnType<typeof parseTimeWindowsJson>;
     externalBusy: Awaited<ReturnType<typeof getExternalBusy>>["intervals"];
     blackoutBusy: ReturnType<typeof blackoutsToBusy>;
@@ -141,15 +142,16 @@ export async function applyTaskFeedback(args: {
   } | null = null;
   async function placementCtx() {
     if (_ctx) return _ctx;
-    const [pref, calRead, crossPlan] = await Promise.all([
-      ensureUserPreferences(userId),
+    const pref = await ensureUserPreferences(userId);
+    const tz = pref.userTimeZone || "UTC";
+    const [calRead, crossPlan] = await Promise.all([
       getExternalBusy({
         userId,
         accessToken,
         from: now,
         to: new Date(plan.deadline.getTime() + 864e5),
       }),
-      loadCrossPlanBusy({ userId, excludePlanId: planId }),
+      loadCrossPlanBusy({ userId, excludePlanId: planId, tz }),
     ]);
     const tw = parseTimeWindowsJson(pref.timeWindows);
     const externalBusy = calRead.intervals;
@@ -163,6 +165,7 @@ export async function applyTaskFeedback(args: {
     });
     const sproutPlan = JSON.parse(plan.planJson || "{}") as SproutPlan;
     _ctx = {
+      tz,
       timeWindows: tw,
       externalBusy,
       blackoutBusy,
@@ -264,6 +267,7 @@ export async function applyTaskFeedback(args: {
         hourUtility: ctx.hourUtility,
         now,
         planId,
+        tz: ctx.tz,
         extraDailyMinutesUsed: ctx.crossPlanDailyMinutes,
         placementRules: ctx.placementRules,
         phaseCount: ctx.phaseCount,
@@ -341,6 +345,7 @@ export async function applyTaskFeedback(args: {
         hourUtility: ctx.hourUtility,
         now,
         planId,
+        tz: ctx.tz,
         extraDailyMinutesUsed: ctx.crossPlanDailyMinutes,
         placementRules: ctx.placementRules,
         phaseCount: ctx.phaseCount,
@@ -379,6 +384,7 @@ async function advanceFsrsAndPlaceNewReviews(args: {
   now: Date;
   schedule: ScheduledSession[];
   ctxLoader: () => Promise<{
+    tz: string;
     timeWindows: ReturnType<typeof parseTimeWindowsJson>;
     externalBusy: Awaited<ReturnType<typeof getExternalBusy>>["intervals"];
     blackoutBusy: ReturnType<typeof blackoutsToBusy>;
@@ -509,6 +515,7 @@ async function advanceFsrsAndPlaceNewReviews(args: {
     hourUtility: ctx.hourUtility,
     now,
     planId: args.planId,
+    tz: ctx.tz,
     extraDailyMinutesUsed: ctx.crossPlanDailyMinutes,
     placementRules: ctx.placementRules,
     phaseCount: ctx.phaseCount,

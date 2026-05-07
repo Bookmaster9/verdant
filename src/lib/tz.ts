@@ -49,6 +49,13 @@ export function dowMonZeroInTz(d: Date, tz: string): number {
   return (sunZero + 6) % 7;
 }
 
+/** Sun=0..Sat=6 weekday index of `d` as observed in `tz`. Mirrors JS Date.getDay. */
+export function dowSunZeroInTz(d: Date, tz: string): number {
+  const short = dowShortInTz(d, tz);
+  const idx = DOW_SHORT.indexOf(short);
+  return idx < 0 ? 0 : idx;
+}
+
 /** Hour (0–23) of `d` as observed in `tz`. */
 export function hourInTz(d: Date, tz: string): number {
   const hh = new Intl.DateTimeFormat("en-GB", {
@@ -134,4 +141,28 @@ export function mondayYmdInTz(d: Date, tz: string): string {
   const todayYmd = ymdInTz(d, tz);
   const dow = dowMonZeroInTz(d, tz); // Mon=0..Sun=6
   return addDaysYmd(todayYmd, -dow);
+}
+
+/**
+ * UTC instant of tz-local midnight on the calendar day containing `d`. The
+ * scheduler uses this in place of date-fns `startOfDay` so day boundaries
+ * follow the user's wall clock rather than the server's.
+ */
+export function startOfDayInTz(d: Date, tz: string): Date {
+  const ymd = ymdInTz(d, tz);
+  const iso = localWallClockToUtcIso(ymd, "00:00", tz);
+  return iso ? new Date(iso) : d;
+}
+
+/**
+ * Add `days` to `d` in the user's tz, preserving the local wall-clock
+ * time-of-day across DST transitions. Equivalent to date-fns `addDays` when
+ * tz matches the server, but DST-correct everywhere else.
+ */
+export function addDaysInTz(d: Date, days: number, tz: string): Date {
+  const ymd = ymdInTz(d, tz);
+  const time = hmInTz(d, tz);
+  const newYmd = addDaysYmd(ymd, days);
+  const iso = localWallClockToUtcIso(newYmd, time, tz);
+  return iso ? new Date(iso) : new Date(d.getTime() + days * 86_400_000);
 }

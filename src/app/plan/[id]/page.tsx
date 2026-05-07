@@ -2,10 +2,12 @@ import { auth } from "@/auth";
 import { Shell } from "@/components/Shell";
 import { loadPlanState } from "@/lib/load-plan-state";
 import { prisma } from "@/lib/db";
+import { ensureUserPreferences } from "@/lib/user";
 import type { FernNote, ScheduledSession, SproutPlan, TaskType } from "@/types/plan";
 import { redirect, notFound } from "next/navigation";
 import Link from "next/link";
 import { format, parseISO, differenceInCalendarDays } from "date-fns";
+import { dowShortInTz, hmInTz } from "@/lib/tz";
 import { PlanActions } from "./PlanActions";
 import { DeleteSproutButton } from "./DeleteSproutButton";
 import { RoadAheadRow } from "./RoadAheadRow";
@@ -41,6 +43,8 @@ export default async function PlanPage({
     notFound();
   }
   const { plan, schedule, completions, conflicts } = state;
+  const pref = await ensureUserPreferences(s.user.id);
+  const tz = pref.userTimeZone || "UTC";
   const sprout: SproutPlan = JSON.parse(plan.planJson) as SproutPlan;
   const recs: string[] = JSON.parse(plan.recommendations || "[]") as string[];
   const done = new Set(
@@ -590,10 +594,10 @@ export default async function PlanPage({
                       >
                         <div style={{ textAlign: "center", lineHeight: 1.1 }}>
                           <div style={{ fontWeight: 600 }}>
-                            {format(row.start, "EEE")}
+                            {dowShortInTz(row.start, tz)}
                           </div>
                           <div style={{ color: "var(--ink-faded)" }}>
-                            {format(row.start, "HH:mm")}
+                            {hmInTz(row.start, tz)}
                           </div>
                         </div>
                       </div>
@@ -699,9 +703,17 @@ export default async function PlanPage({
                         }}
                       >
                         {row.completedAt
-                          ? format(row.completedAt, "MMM d")
+                          ? new Intl.DateTimeFormat("en-US", {
+                              timeZone: tz,
+                              month: "short",
+                              day: "numeric",
+                            }).format(row.completedAt)
                           : row.scheduledStart
-                            ? format(row.scheduledStart, "MMM d")
+                            ? new Intl.DateTimeFormat("en-US", {
+                                timeZone: tz,
+                                month: "short",
+                                day: "numeric",
+                              }).format(row.scheduledStart)
                             : "—"}
                       </div>
                       <div

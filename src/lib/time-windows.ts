@@ -1,7 +1,7 @@
-import { addDays, startOfDay } from "date-fns";
 import type { ScheduledSession, TimeWindows } from "@/types/plan";
 import type { BusyInterval } from "@/lib/calendar-read";
 import { freeIntervalsForDay, type FreeInterval } from "@/lib/free-intervals";
+import { addDaysInTz, startOfDayInTz, ymdInTz } from "@/lib/tz";
 
 /** Pick next start time in preferred windows, advancing day by day */
 export function firstSlotFrom(
@@ -9,12 +9,14 @@ export function firstSlotFrom(
   durationMinutes: number,
   timeWindows: TimeWindows,
   maxEndDate: Date,
-  busy: BusyInterval[] = []
+  busy: BusyInterval[],
+  tz: string
 ): Date | null {
+  const sod = startOfDayInTz(from, tz);
   for (let d = 0; d < 400; d++) {
-    const day = addDays(startOfDay(from), d);
+    const day = addDaysInTz(sod, d, tz);
     if (day > maxEndDate) return null;
-    const frags = freeIntervalsForDay(day, timeWindows, busy);
+    const frags = freeIntervalsForDay(day, timeWindows, busy, tz);
     for (const f of frags) {
       const fStart = f.start;
       const fEnd = f.end;
@@ -52,9 +54,10 @@ function maxMinutesThatFitInWindow(
   day: Date,
   timeWindows: TimeWindows,
   maxMinutesPerDay: number,
-  busy: BusyInterval[]
+  busy: BusyInterval[],
+  tz: string
 ): number {
-  const frags = freeIntervalsForDay(day, timeWindows, busy);
+  const frags = freeIntervalsForDay(day, timeWindows, busy, tz);
   if (frags.length === 0) return 0;
   return Math.max(0, Math.min(maxMinutesPerDay, largestFragmentMinutes(frags)));
 }
@@ -63,14 +66,15 @@ function advanceToLearnableDay(
   from: Date,
   timeWindows: TimeWindows,
   deadline: Date,
-  busy: BusyInterval[]
+  busy: BusyInterval[],
+  tz: string
 ): Date | null {
-  let cur = startOfDay(from);
-  const end = startOfDay(deadline);
+  let cur = startOfDayInTz(from, tz);
+  const end = startOfDayInTz(deadline, tz);
   for (let i = 0; i < 400; i++) {
     if (cur > end) return null;
-    if (maxMinutesThatFitInWindow(cur, timeWindows, 24 * 60, busy) > 0) return cur;
-    cur = addDays(cur, 1);
+    if (maxMinutesThatFitInWindow(cur, timeWindows, 24 * 60, busy, tz) > 0) return cur;
+    cur = addDaysInTz(cur, 1, tz);
   }
   return null;
 }
@@ -85,11 +89,12 @@ function sessionStartOnDay(
   durationMinutes: number,
   timeWindows: TimeWindows,
   deadline: Date,
-  busy: BusyInterval[]
+  busy: BusyInterval[],
+  tz: string
 ): Date | null {
-  const sod = startOfDay(day);
-  if (sod > startOfDay(deadline)) return null;
-  const frags = freeIntervalsForDay(sod, timeWindows, busy);
+  const sod = startOfDayInTz(day, tz);
+  if (sod > startOfDayInTz(deadline, tz)) return null;
+  const frags = freeIntervalsForDay(sod, timeWindows, busy, tz);
   if (frags.length === 0) return null;
 
   for (const f of frags) {
@@ -120,7 +125,8 @@ export function buildScheduleFromPlan(
   deadline: Date,
   timeWindows: TimeWindows,
   maxMinutesPerDay: number,
-  busy: BusyInterval[] = []
+  busy: BusyInterval[],
+  tz: string
 ): ScheduledSession[] {
   const order: Record<ScheduledSession["type"], number> = {
     lesson: 0,
@@ -133,8 +139,8 @@ export function buildScheduleFromPlan(
 
   type T = (typeof sorted)[number];
   let cursorDay =
-    advanceToLearnableDay(startOfDay(startDate), timeWindows, deadline, busy) ??
-    startOfDay(startDate);
+    advanceToLearnableDay(startOfDayInTz(startDate, tz), timeWindows, deadline, busy, tz) ??
+    startOfDayInTz(startDate, tz);
   let bucket: T[] = [];
   let bucketMins = 0;
   const dayBuckets: Array<{ day: Date; items: T[]; minutes: number }> = [];
@@ -155,10 +161,10 @@ export function buildScheduleFromPlan(
     let guard = 0;
     while (guard < 500) {
       guard++;
-      const dayCap = maxMinutesThatFitInWindow(cursorDay, timeWindows, maxMinutesPerDay, busy);
+      const dayCap = maxMinutesThatFitInWindow(cursorDay, timeWindows, maxMinutesPerDay, busy, tz);
       if (dayCap === 0) {
         flush();
-        const next = advanceToLearnableDay(addDays(cursorDay, 1), timeWindows, deadline, busy);
+        const next = advanceToLearnableDay(addDaysInTz(cursorDay, 1, tz), timeWindows, deadline, busy, tz);
         if (!next) break;
         cursorDay = next;
         continue;
@@ -167,7 +173,7 @@ export function buildScheduleFromPlan(
         if (guard > 120) {
           dur = dayCap;
         } else {
-          const next = advanceToLearnableDay(addDays(cursorDay, 1), timeWindows, deadline, busy);
+          const next = advanceToLearnableDay(addDaysInTz(cursorDay, 1, tz), timeWindows, deadline, busy, tz);
           if (!next) break;
           cursorDay = next;
           continue;
@@ -175,7 +181,7 @@ export function buildScheduleFromPlan(
       }
       if (bucket.length > 0 && bucketMins + dur > dayCap) {
         flush();
-        const next = advanceToLearnableDay(addDays(cursorDay, 1), timeWindows, deadline, busy);
+        const next = advanceToLearnableDay(addDaysInTz(cursorDay, 1, tz), timeWindows, deadline, busy, tz);
         if (!next) break;
         cursorDay = next;
         continue;
@@ -189,17 +195,18 @@ export function buildScheduleFromPlan(
 
   const out: ScheduledSession[] = [];
   for (const b of dayBuckets) {
-    const sod = startOfDay(b.day);
-    const dayKey = sod.toISOString().slice(0, 10);
+    const sod = startOfDayInTz(b.day, tz);
+    const dayKey = ymdInTz(sod, tz);
     const notBefore =
-      sod.getTime() === startOfDay(startDate).getTime() ? startDate : sod;
+      sod.getTime() === startOfDayInTz(startDate, tz).getTime() ? startDate : sod;
     const start = sessionStartOnDay(
       sod,
       notBefore,
       b.minutes,
       timeWindows,
       deadline,
-      busy
+      busy,
+      tz
     );
     if (!start) continue;
 
@@ -224,7 +231,7 @@ export function buildScheduleFromPlan(
   if (out.length === 0 && sorted.length > 0) {
     const t = sorted[0];
     const dur = Math.max(15, Math.min(t.minutes, maxMinutesPerDay));
-    const fallback = firstSlotFrom(startDate, dur, timeWindows, deadline, busy);
+    const fallback = firstSlotFrom(startDate, dur, timeWindows, deadline, busy, tz);
     if (fallback) {
       out.push({
         id: `sess-${t.id}`,
@@ -250,7 +257,8 @@ export function rescheduleUncompleted(
   deadline: Date,
   timeWindows: TimeWindows,
   maxPerDay: number,
-  busy: BusyInterval[] = []
+  busy: BusyInterval[],
+  tz: string
 ): ScheduledSession[] {
   const past = sessions.filter((s) => new Date(s.end) < fromDate);
   const future = sessions.filter((s) => new Date(s.start) >= fromDate);
@@ -303,10 +311,10 @@ export function rescheduleUncompleted(
     deadline,
     timeWindows,
     maxPerDay,
-    [...busy, ...lockedAsBusy]
+    [...busy, ...lockedAsBusy],
+    tz
   );
   return [...past, ...lockedFuture, ...newSched].sort(
     (a, b) => new Date(a.start).getTime() - new Date(b.start).getTime()
   );
 }
-

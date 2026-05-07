@@ -66,15 +66,16 @@ export async function POST(request: Request, { params }: RouteParams) {
     plan.scheduleJson || "[]"
   ) as ScheduledSession[];
 
-  const [pref, calRead, crossPlan] = await Promise.all([
-    ensureUserPreferences(s.user.id),
+  const pref = await ensureUserPreferences(s.user.id);
+  const tz = pref.userTimeZone || "UTC";
+  const [calRead, crossPlan] = await Promise.all([
     getExternalBusy({
       userId: s.user.id,
       accessToken: s.accessToken,
       from: now,
       to: new Date(plan.deadline.getTime() + 864e5),
     }),
-    loadCrossPlanBusy({ userId: s.user.id, excludePlanId: id }),
+    loadCrossPlanBusy({ userId: s.user.id, excludePlanId: id, tz }),
   ]);
   const tw = parseTimeWindowsJson(pref.timeWindows);
   const hourUtility = parseHourUtility(pref.hourUtility);
@@ -106,6 +107,7 @@ export async function POST(request: Request, { params }: RouteParams) {
     hourUtility,
     now,
     planId: id,
+    tz,
     extraDailyMinutesUsed: crossPlan.initialDailyMinutesUsed,
     placementRules: persistentRules,
     phaseCount: (sproutPlan.phases ?? []).length,

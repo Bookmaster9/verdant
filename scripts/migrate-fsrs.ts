@@ -56,6 +56,7 @@ async function main() {
       hourUtility: {},
       now: new Date(),
       planId: plan.id,
+      tz: pref?.userTimeZone || "UTC",
     };
     const pass1 = packWithScoring(nonReviewTasks, ctx);
 

@@ -1,10 +1,11 @@
 import { auth } from "@/auth";
 import { Shell } from "@/components/Shell";
 import { prisma } from "@/lib/db";
+import { ensureUserPreferences } from "@/lib/user";
 import type { PlanTask, ScheduledSession, SproutPlan } from "@/types/plan";
 import { redirect, notFound } from "next/navigation";
 import Link from "next/link";
-import { format, parseISO } from "date-fns";
+import { parseISO } from "date-fns";
 import {
   TypeBadge,
   YouTubeBlock,
@@ -124,6 +125,9 @@ export default async function SessionDetailPage({
     where: { id, userId: s.user.id },
   });
   if (!plan) notFound();
+
+  const pref = await ensureUserPreferences(s.user.id);
+  const tz = pref.userTimeZone || "UTC";
 
   const sprout: SproutPlan = JSON.parse(plan.planJson) as SproutPlan;
   const tasks = sprout.tasks || [];
@@ -330,7 +334,18 @@ export default async function SessionDetailPage({
               )}
               {scheduledFor && (
                 <span className="chip">
-                  {format(parseISO(scheduledFor.start), "EEE MMM d · h:mm a")}
+                  {new Intl.DateTimeFormat("en-US", {
+                    timeZone: tz,
+                    weekday: "short",
+                    month: "short",
+                    day: "numeric",
+                    hour: "numeric",
+                    minute: "2-digit",
+                    hour12: true,
+                  })
+                    .format(parseISO(scheduledFor.start))
+                    .replace(", ", " · ")
+                    .replace(" at ", " · ")}
                 </span>
               )}
               {initialDone && <span className="chip moss">done ✓</span>}

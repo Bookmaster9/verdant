@@ -5,7 +5,6 @@
  * raw event. We deliberately do NOT pass calendar event titles to the LLM
  * — only deterministic descriptors derived from busy-block patterns.
  */
-import { addDays, getDay, startOfDay } from "date-fns";
 import type { TimeWindows } from "@/types/plan";
 import type { BusyInterval } from "@/lib/calendar-read";
 import { freeIntervalsForDay } from "@/lib/free-intervals";
@@ -13,6 +12,11 @@ import {
   preferredTimeOfDayHistogram,
   type HourUtilityMap,
 } from "@/lib/hour-utility";
+import {
+  addDaysInTz,
+  dowSunZeroInTz,
+  startOfDayInTz,
+} from "@/lib/tz";
 
 export interface PerWeekAvailability {
   weekIndex: number;
@@ -37,9 +41,10 @@ const DOW_LABELS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 function freeMinutesOnDay(
   day: Date,
   timeWindows: TimeWindows,
-  busy: BusyInterval[]
+  busy: BusyInterval[],
+  tz: string
 ): number {
-  const frags = freeIntervalsForDay(day, timeWindows, busy);
+  const frags = freeIntervalsForDay(day, timeWindows, busy, tz);
   let m = 0;
   for (const f of frags) m += (f.end.getTime() - f.start.getTime()) / 60000;
   return m;
@@ -48,16 +53,17 @@ function freeMinutesOnDay(
 function noteForWeek(
   weekStart: Date,
   timeWindows: TimeWindows,
-  busy: BusyInterval[]
+  busy: BusyInterval[],
+  tz: string
 ): string | null {
   const blockedDows: number[] = [];
   for (let i = 0; i < 7; i++) {
-    const day = addDays(weekStart, i);
-    const dow = getDay(day);
+    const day = addDaysInTz(weekStart, i, tz);
+    const dow = dowSunZeroInTz(day, tz);
     const wd = String(dow);
     const list = timeWindows[wd] ?? timeWindows[wd === "0" ? "7" : wd];
     if (!list || list.length === 0) continue;
-    const free = freeMinutesOnDay(day, timeWindows, busy);
+    const free = freeMinutesOnDay(day, timeWindows, busy, tz);
     let total = 0;
     for (const w of list) {
       const sm =
@@ -83,20 +89,22 @@ export function summarizeAvailability(args: {
   hourUtility: HourUtilityMap;
   /** "Now" for decay-on-read against `hourUtility`. */
   now: Date;
+  /** User's IANA timezone — drives day boundaries and window wall-clocks. */
+  tz: string;
 }): AvailabilitySummary {
-  const { startDate, weeks, timeWindows, busy, hourUtility, now } = args;
-  const sod = startOfDay(startDate);
+  const { startDate, weeks, timeWindows, busy, hourUtility, now, tz } = args;
+  const sod = startOfDayInTz(startDate, tz);
 
   const perWeek: PerWeekAvailability[] = [];
   let totalMinutes = 0;
   for (let w = 0; w < weeks; w++) {
-    const weekStart = addDays(sod, w * 7);
+    const weekStart = addDaysInTz(sod, w * 7, tz);
     let minutes = 0;
     for (let i = 0; i < 7; i++) {
-      const day = addDays(weekStart, i);
-      minutes += freeMinutesOnDay(day, timeWindows, busy);
+      const day = addDaysInTz(weekStart, i, tz);
+      minutes += freeMinutesOnDay(day, timeWindows, busy, tz);
     }
-    const note = noteForWeek(weekStart, timeWindows, busy);
+    const note = noteForWeek(weekStart, timeWindows, busy, tz);
     perWeek.push({ weekIndex: w, minutes: Math.round(minutes), note });
     totalMinutes += minutes;
   }

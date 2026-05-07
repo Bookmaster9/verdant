@@ -109,11 +109,15 @@ export async function POST(request: Request) {
           label: "peeking at your garden",
         });
 
+        // Prefs come first so we can key cross-plan busy by the user's tz —
+        // see scoring-pack `dayKey`. Other reads stay in parallel.
+        const pref = await ensureUserPreferences(userId);
+        const tz = pref.userTimeZone || "UTC";
+
         // Multi-sprout: every other active plan's schedule is hard busy +
         // already-consumed daily minutes. No singleton gate anymore.
-        const [crossPlan, pref, busyResult] = await Promise.all([
-          loadCrossPlanBusy({ userId, excludePlanId: null }),
-          ensureUserPreferences(userId),
+        const [crossPlan, busyResult] = await Promise.all([
+          loadCrossPlanBusy({ userId, excludePlanId: null, tz }),
           getExternalBusy({
             userId,
             accessToken,
@@ -141,6 +145,7 @@ export async function POST(request: Request) {
           busy: [...externalBusy, ...crossPlan.busy],
           hourUtility,
           now,
+          tz,
         });
 
         // Step 2: LLM — usually the longest step.
@@ -195,6 +200,7 @@ export async function POST(request: Request) {
           hourUtility,
           now,
           planId: `pre-pack-${userId}`,
+          tz,
           initialDailyMinutesUsed: crossPlan.initialDailyMinutesUsed,
         };
         const tPack = Date.now();

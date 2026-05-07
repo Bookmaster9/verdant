@@ -69,6 +69,7 @@ export async function POST(request: Request, { params }: RouteParams) {
   const wantRevert = parsed.data.revert === true;
 
   const pref = await ensureUserPreferences(s.user.id);
+  const tz = pref.userTimeZone || "UTC";
   const tw = parseTimeWindowsJson(pref.timeWindows);
   const hourUtility = parseHourUtility(pref.hourUtility);
   const startDate = new Date();
@@ -109,6 +110,7 @@ export async function POST(request: Request, { params }: RouteParams) {
       busy: externalBusy,
       hourUtility,
       now,
+      tz,
     });
     let sprout = await generatePlanWithAI({
       targetSkill: plan.targetSkill,
@@ -201,6 +203,7 @@ export async function POST(request: Request, { params }: RouteParams) {
     hourUtility,
     now,
     planId: id,
+    tz,
     placementRules: persistentRules,
     phaseCount: sproutOut.phases.length,
   });
