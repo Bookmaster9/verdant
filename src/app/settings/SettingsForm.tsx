@@ -59,6 +59,8 @@ export function SettingsForm(p: Props) {
   const [maxAutoSaved, setMaxAutoSaved] = useState<number | null>(null);
   const [twAutoSavedAt, setTwAutoSavedAt] = useState<number | null>(null);
   const [calAutoSavedAt, setCalAutoSavedAt] = useState<number | null>(null);
+  const [resetBusy, setResetBusy] = useState(false);
+  const [resetMsg, setResetMsg] = useState<string | null>(null);
 
   // Auto-save the daily-limit slider on release. Without this, dragging the
   // slider only updates local state — leaving the page loses the change and
@@ -110,6 +112,41 @@ export function SettingsForm(p: Props) {
       }
     } catch {
       setErr("Couldn't save time windows");
+    }
+  }
+
+  async function resetVerdantCalendar() {
+    if (resetBusy) return;
+    const confirmed = window.confirm(
+      "Reset Verdant's calendar wiring?\n\n" +
+        "This clears the Verdant→Google link and marks every session as not-yet-synced. " +
+        "Next time you click \"Sync to Google\" Verdant will create a fresh calendar and push every session to it.\n\n" +
+        "Old \"Verdant\" calendars in your Google sidebar will stay until you delete them manually."
+    );
+    if (!confirmed) return;
+    setResetBusy(true);
+    setResetMsg(null);
+    try {
+      const res = await fetch("/api/calendar/reset", { method: "POST" });
+      const j = (await res.json().catch(() => ({}))) as {
+        ok?: boolean;
+        sessionsCleared?: number;
+        error?: string;
+      };
+      if (!res.ok || !j.ok) {
+        setResetMsg(j.error || "Reset failed");
+      } else {
+        setResetMsg(
+          `Reset done. Cleared ${j.sessionsCleared ?? 0} session link${
+            (j.sessionsCleared ?? 0) === 1 ? "" : "s"
+          }. Click "Sync to Google" on the schedule page to push to a fresh calendar.`
+        );
+        r.refresh();
+      }
+    } catch {
+      setResetMsg("Reset failed");
+    } finally {
+      setResetBusy(false);
     }
   }
 
@@ -276,6 +313,50 @@ export function SettingsForm(p: Props) {
         >
           turning this off pauses pushing — your Google account stays connected.
         </p>
+        <div
+          style={{
+            marginTop: 16,
+            paddingTop: 14,
+            borderTop: "1.25px dashed var(--ink-soft)",
+          }}
+        >
+          <div
+            style={{
+              fontFamily: "var(--font-fraunces)",
+              fontSize: 13,
+              color: "var(--ink-soft)",
+              marginBottom: 8,
+              lineHeight: 1.4,
+            }}
+          >
+            Seeing duplicate &quot;Verdant&quot; calendars in Google? Reset clears
+            Verdant&apos;s link and re-syncs everything to a single fresh
+            calendar.
+          </div>
+          <button
+            type="button"
+            className="btn sm"
+            onClick={resetVerdantCalendar}
+            disabled={resetBusy}
+          >
+            {resetBusy ? "resetting…" : "Reset Verdant calendar"}
+          </button>
+          {resetMsg && (
+            <div
+              style={{
+                marginTop: 8,
+                fontFamily: "var(--font-fraunces)",
+                fontSize: 13,
+                color: resetMsg.startsWith("Reset done")
+                  ? "var(--moss-deep)"
+                  : "var(--berry)",
+                lineHeight: 1.4,
+              }}
+            >
+              {resetMsg}
+            </div>
+          )}
+        </div>
       </div>
 
       {/* Daily limit */}

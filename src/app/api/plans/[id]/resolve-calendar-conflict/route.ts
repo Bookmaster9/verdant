@@ -13,7 +13,7 @@ import {
 } from "@/lib/placement-rules";
 import { firstSlotFrom } from "@/lib/time-windows";
 import type { ScheduledSession, SproutPlan } from "@/types/plan";
-import { updateSessionInGoogle } from "@/lib/google-calendar";
+import { ensureVerdantCalendar, updateSessionInGoogle } from "@/lib/google-calendar";
 import { z } from "zod";
 
 const body = z.object({
@@ -239,7 +239,11 @@ export async function POST(request: Request, { params }: RouteParams) {
       };
       runAfter(async () => {
         try {
-          await updateSessionInGoogle(userId, accessToken, moved);
+          const calendarId = await ensureVerdantCalendar({
+            userId,
+            accessToken,
+          });
+          await updateSessionInGoogle(accessToken, calendarId, moved);
           const fresh = await prisma.learningPlan.findUnique({ where: { id } });
           if (!fresh) return;
           const list = JSON.parse(

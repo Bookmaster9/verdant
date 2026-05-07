@@ -1,6 +1,6 @@
 import { auth } from "@/auth";
 import { prisma } from "@/lib/db";
-import { updateSessionInGoogle } from "@/lib/google-calendar";
+import { ensureVerdantCalendar, updateSessionInGoogle } from "@/lib/google-calendar";
 import type { ScheduledSession } from "@/types/plan";
 import { z } from "zod";
 
@@ -125,7 +125,8 @@ export async function POST(request: Request, { params }: RouteParams) {
         calendarEventId: previousCalendarEventId,
       };
       try {
-        await updateSessionInGoogle(userId, accessToken, movedSession);
+        const calendarId = await ensureVerdantCalendar({ userId, accessToken });
+        await updateSessionInGoogle(accessToken, calendarId, movedSession);
         // Mark synced=true once Google confirms.
         const fresh = await prisma.learningPlan.findUnique({ where: { id } });
         if (!fresh) return;

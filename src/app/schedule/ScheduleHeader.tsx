@@ -28,6 +28,7 @@ export function ScheduleHeader({
     setSyncing(true);
     setMsg(null);
     let totalSynced = 0;
+    let allAlreadySynced = true;
     let anyErr = false;
     for (const planId of activePlanIds) {
       try {
@@ -36,10 +37,14 @@ export function ScheduleHeader({
         });
         const j = (await res.json().catch(() => ({}))) as {
           syncedCount?: number;
+          allAlreadySynced?: boolean;
           errors?: string[];
         };
         if (!res.ok) anyErr = true;
-        else totalSynced += j.syncedCount ?? 0;
+        else {
+          totalSynced += j.syncedCount ?? 0;
+          if (!j.allAlreadySynced) allAlreadySynced = false;
+        }
       } catch {
         anyErr = true;
       }
@@ -47,6 +52,8 @@ export function ScheduleHeader({
     setMsg(
       anyErr
         ? "some sprouts failed to sync"
+        : totalSynced === 0 && allAlreadySynced
+        ? "all sessions already on Google Calendar"
         : `synced ${totalSynced} session${totalSynced === 1 ? "" : "s"}`
     );
     setSyncing(false);

@@ -1,5 +1,8 @@
 import { auth } from "@/auth";
-import { syncUnsyncedSessions } from "@/lib/google-calendar";
+import {
+  ensureVerdantCalendar,
+  syncUnsyncedSessions,
+} from "@/lib/google-calendar";
 import { prisma } from "@/lib/db";
 import type { ScheduledSession } from "@/types/plan";
 import { NextResponse } from "next/server";
@@ -23,11 +26,27 @@ export async function POST(_: Request, { params }: RouteParams) {
   const schedule = JSON.parse(plan.scheduleJson || "[]") as ScheduledSession[];
   const accessToken = s.accessToken;
 
-  const { sessions, errors, syncedCount } = await syncUnsyncedSessions(
-    s.user.id,
-    accessToken,
-    schedule
-  );
+  // Pre-warm calendar provisioning before the per-session loop. The loop
+  // itself is sequential, but ensuring this happens once (validated against
+  // Google) keeps the contract identical to the parallel call sites.
+  let calendarId: string | undefined;
+  if (accessToken) {
+    try {
+      calendarId = await ensureVerdantCalendar({
+        userId: s.user.id,
+        accessToken,
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Calendar setup failed";
+      return NextResponse.json(
+        { syncedCount: 0, pendingCount: schedule.length, errors: [message], ok: false },
+        { status: 502 }
+      );
+    }
+  }
+
+  const { sessions, errors, syncedCount, allAlreadySynced } =
+    await syncUnsyncedSessions(accessToken, calendarId, schedule);
 
   await prisma.learningPlan.update({
     where: { id },
@@ -39,6 +58,7 @@ export async function POST(_: Request, { params }: RouteParams) {
   return NextResponse.json({
     syncedCount,
     pendingCount: pending,
+    allAlreadySynced,
     errors,
     ok: errors.length === 0 || syncedCount > 0,
   });

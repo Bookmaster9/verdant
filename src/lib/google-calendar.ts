@@ -4,7 +4,14 @@
  * After the calendar-scope migration, Verdant only owns events on its own
  * secondary calendar (created via the `calendar.app.created` scope). The
  * calendar id is stored per-user on `UserPreference.verdantCalendarId` and
- * provisioned lazily on the first push.
+ * provisioned lazily via `ensureVerdantCalendar`.
+ *
+ * Concurrency contract: callers that fan out (Promise.all over many sessions)
+ * MUST pre-warm by calling `ensureVerdantCalendar` once and passing the result
+ * down to every per-session function. Calling `ensureVerdantCalendar` from
+ * inside a parallel loop races the DB read against the create+upsert, which
+ * causes N concurrent calendar creates and leaves N-1 orphaned calendars in
+ * the user's Google sidebar.
  *
  * Read companion: `calendar-read.ts` (FreeBusy on primary; events.list on the
  * Verdant secondary).
@@ -67,39 +74,7 @@ function calendarHttpError(status: number, body: string): string {
   return `Calendar HTTP ${status}: ${clip}`;
 }
 
-function calendarEventDescription(session: ScheduledSession): string {
-  if (session.agenda && session.agenda.length > 0) {
-    const lines = session.agenda.map(
-      (a, i) => `${i + 1}. ${a.title} (~${a.minutes} min)`
-    );
-    return ["Verdant — accomplish during this session:", "", ...lines].join("\n");
-  }
-  return "Verdant sprout session";
-}
-
-/**
- * Get-or-create the Verdant secondary calendar for `userId`. Returns the
- * calendar id. Persists the id on `UserPreference.verdantCalendarId` so
- * subsequent calls are a single DB read.
- *
- * Recovers from "calendar deleted in Google" by clearing the stored id and
- * recreating on the next call (caller passes `forceRecreate=true` after a
- * 404 from an event write).
- */
-export async function ensureVerdantCalendar(args: {
-  userId: string;
-  accessToken: string;
-  forceRecreate?: boolean;
-}): Promise<string> {
-  const { userId, accessToken, forceRecreate } = args;
-  if (!forceRecreate) {
-    const pref = await prisma.userPreference.findUnique({
-      where: { userId },
-      select: { verdantCalendarId: true },
-    });
-    if (pref?.verdantCalendarId) return pref.verdantCalendarId;
-  }
-
+async function createVerdantCalendar(accessToken: string): Promise<string> {
   const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
   const res = await fetch(
     "https://www.googleapis.com/calendar/v3/calendars",
@@ -124,18 +99,69 @@ export async function ensureVerdantCalendar(args: {
   if (!j.id) {
     throw new Error("Calendar create response missing id");
   }
+  return j.id;
+}
 
+async function calendarStillExists(
+  calendarId: string,
+  accessToken: string
+): Promise<boolean> {
+  const res = await fetch(
+    `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(
+      calendarId
+    )}`,
+    { headers: { Authorization: `Bearer ${accessToken}` } }
+  );
+  if (res.ok) return true;
+  if (res.status === 404 || res.status === 410) return false;
+  const body = await res.text();
+  throw new Error(calendarHttpError(res.status, body));
+}
+
+async function persistCalendarId(userId: string, id: string): Promise<void> {
   await prisma.userPreference.upsert({
     where: { userId },
     create: {
       userId,
       timeWindows: JSON.stringify({}),
-      verdantCalendarId: j.id,
+      verdantCalendarId: id,
       legacyVerdantEventsAckAt: new Date(0),
     },
-    update: { verdantCalendarId: j.id },
+    update: { verdantCalendarId: id },
   });
-  return j.id;
+}
+
+/**
+ * Get-or-create the Verdant secondary calendar for `userId`. Returns a
+ * verified-live calendar id.
+ *
+ * Steps:
+ *   1. Read `UserPreference.verdantCalendarId` from the DB.
+ *   2. If present, validate by GET on the calendar resource. If it 404s
+ *      (user deleted it in Google), fall through to recreate.
+ *   3. Otherwise call `POST /calendars`, persist the new id, return it.
+ *
+ * Concurrency: every fanned-out write path MUST call this once before the
+ * fan-out and reuse the returned id. Calling it in parallel from N tasks
+ * results in N calendar creates because step 1 races the persist in step 3.
+ */
+export async function ensureVerdantCalendar(args: {
+  userId: string;
+  accessToken: string;
+}): Promise<string> {
+  const { userId, accessToken } = args;
+  const pref = await prisma.userPreference.findUnique({
+    where: { userId },
+    select: { verdantCalendarId: true },
+  });
+  if (pref?.verdantCalendarId) {
+    const live = await calendarStillExists(pref.verdantCalendarId, accessToken);
+    if (live) return pref.verdantCalendarId;
+    // Calendar was deleted in Google — fall through and recreate.
+  }
+  const id = await createVerdantCalendar(accessToken);
+  await persistCalendarId(userId, id);
+  return id;
 }
 
 interface InsertResult {
@@ -144,49 +170,34 @@ interface InsertResult {
 
 /**
  * Create a single Google Calendar event on the user's Verdant secondary
- * calendar. If the calendar is missing in Google (404 on insert), recreates it
- * and retries once.
+ * calendar. Caller MUST pass a `calendarId` returned from `ensureVerdantCalendar`.
  */
 export async function syncSessionToGoogle(
-  userId: string,
   accessToken: string,
+  calendarId: string,
   session: ScheduledSession
 ): Promise<InsertResult> {
-  let calendarId = await ensureVerdantCalendar({ userId, accessToken });
-  const attempt = async (calId: string): Promise<Response> => {
-    const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
-    const summary =
-      session.title.length > 900 ? `${session.title.slice(0, 897)}…` : session.title;
-    return fetch(
-      `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(
-        calId
-      )}/events`,
-      {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${accessToken}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          summary,
-          start: { dateTime: session.start, timeZone },
-          end: { dateTime: session.end, timeZone },
-          description: calendarEventDescription(session),
-        }),
-      }
-    );
-  };
-
-  let res = await attempt(calendarId);
-  if (res.status === 404) {
-    // Calendar deleted in Google. Recreate and retry once.
-    calendarId = await ensureVerdantCalendar({
-      userId,
-      accessToken,
-      forceRecreate: true,
-    });
-    res = await attempt(calendarId);
-  }
+  const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  const summary =
+    session.title.length > 900 ? `${session.title.slice(0, 897)}…` : session.title;
+  const res = await fetch(
+    `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(
+      calendarId
+    )}/events`,
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        summary,
+        start: { dateTime: session.start, timeZone },
+        end: { dateTime: session.end, timeZone },
+        description: calendarEventDescription(session),
+      }),
+    }
+  );
   if (!res.ok) {
     const body = await res.text();
     throw new Error(calendarHttpError(res.status, body));
@@ -195,20 +206,32 @@ export async function syncSessionToGoogle(
   return { id: j.id };
 }
 
+function calendarEventDescription(session: ScheduledSession): string {
+  if (session.agenda && session.agenda.length > 0) {
+    const lines = session.agenda.map(
+      (a, i) => `${i + 1}. ${a.title} (~${a.minutes} min)`
+    );
+    return ["Verdant — accomplish during this session:", "", ...lines].join("\n");
+  }
+  return "Verdant sprout session";
+}
+
 /**
  * Insert one session, returning a copy with `calendarEventId` + `googleSynced`
  * set. Failure is non-fatal: returns the session with `googleSynced=false`.
+ *
+ * Caller is responsible for pre-warming `calendarId` via `ensureVerdantCalendar`.
  */
 export async function insertOrSkip(
-  userId: string,
   accessToken: string | undefined,
+  calendarId: string | undefined,
   session: ScheduledSession
 ): Promise<ScheduledSession> {
-  if (!accessToken) {
+  if (!accessToken || !calendarId) {
     return { ...session, googleSynced: false };
   }
   try {
-    const { id } = await syncSessionToGoogle(userId, accessToken, session);
+    const { id } = await syncSessionToGoogle(accessToken, calendarId, session);
     return { ...session, calendarEventId: id, googleSynced: true };
   } catch {
     return { ...session, googleSynced: false };
@@ -217,19 +240,17 @@ export async function insertOrSkip(
 
 /**
  * PATCH an existing event on the Verdant secondary calendar to new times.
- * Used by the drag-to-move flow on the schedule page when the session was
- * already synced. Throws on non-OK; callers mark `googleSynced=false` on
- * failure.
+ * Used by the drag-to-move flow. Throws on non-OK; callers mark
+ * `googleSynced=false` on failure.
  */
 export async function updateSessionInGoogle(
-  userId: string,
   accessToken: string,
+  calendarId: string,
   session: ScheduledSession
 ): Promise<void> {
   if (!session.calendarEventId) {
     throw new Error("session has no calendarEventId — call syncSessionToGoogle instead");
   }
-  const calendarId = await ensureVerdantCalendar({ userId, accessToken });
   const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
   const summary =
     session.title.length > 900 ? `${session.title.slice(0, 897)}…` : session.title;
@@ -259,16 +280,18 @@ export async function updateSessionInGoogle(
 
 /**
  * Create Google Calendar events for sessions not yet marked synced. Runs
- * sequentially to reduce rate-limit risk.
+ * sequentially to reduce rate-limit risk. Caller pre-warms `calendarId`.
  */
 export async function syncUnsyncedSessions(
-  userId: string,
   accessToken: string | undefined,
+  calendarId: string | undefined,
   sessions: ScheduledSession[]
 ): Promise<{
   sessions: ScheduledSession[];
   errors: string[];
   syncedCount: number;
+  /** True if every session is already on Google — UI can show "all synced". */
+  allAlreadySynced: boolean;
 }> {
   const errors: string[] = [];
   if (!accessToken) {
@@ -278,10 +301,22 @@ export async function syncUnsyncedSessions(
         "No Google session token. Sign out and sign in again so Verdant can use Calendar.",
       ],
       syncedCount: 0,
+      allAlreadySynced: false,
+    };
+  }
+  if (!calendarId) {
+    return {
+      sessions,
+      errors: [
+        "Verdant calendar isn't ready yet. Try again in a moment.",
+      ],
+      syncedCount: 0,
+      allAlreadySynced: false,
     };
   }
 
   let syncedCount = 0;
+  let pendingCount = 0;
   const out: ScheduledSession[] = [];
   let fatalApiOff = false;
 
@@ -294,8 +329,9 @@ export async function syncUnsyncedSessions(
       out.push(sess);
       continue;
     }
+    pendingCount++;
     try {
-      const { id } = await syncSessionToGoogle(userId, accessToken, sess);
+      const { id } = await syncSessionToGoogle(accessToken, calendarId, sess);
       syncedCount++;
       out.push({ ...sess, calendarEventId: id, googleSynced: true });
     } catch (e) {
@@ -311,5 +347,10 @@ export async function syncUnsyncedSessions(
     }
   }
 
-  return { sessions: out, errors, syncedCount };
+  return {
+    sessions: out,
+    errors,
+    syncedCount,
+    allAlreadySynced: pendingCount === 0,
+  };
 }

@@ -1,6 +1,6 @@
 import { auth } from "@/auth";
 import { generateSproutPlan, supplementalResources } from "@/lib/generate-sprout";
-import { insertOrSkip } from "@/lib/google-calendar";
+import { ensureVerdantCalendar, insertOrSkip } from "@/lib/google-calendar";
 import { prisma } from "@/lib/db";
 import { ensureUserPreferences } from "@/lib/user";
 import { packWithScoring } from "@/lib/scoring-pack";
@@ -361,8 +361,18 @@ export async function POST(request: Request) {
           after(async () => {
             const tBg = Date.now();
             try {
+              // Pre-warm: serialize the calendar provisioning *before* the
+              // parallel insert fan-out. Otherwise N concurrent inserts each
+              // race the DB read against the create+upsert and end up making
+              // N separate calendars in the user's Google sidebar.
+              const calendarId = await ensureVerdantCalendar({
+                userId,
+                accessToken,
+              });
               const synced = await Promise.all(
-                schedule.map((sess) => insertOrSkip(userId, accessToken, sess))
+                schedule.map((sess) =>
+                  insertOrSkip(accessToken, calendarId, sess)
+                )
               );
               await prisma.learningPlan.update({
                 where: { id: planId },
