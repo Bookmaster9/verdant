@@ -10,6 +10,14 @@ import { reconcileDrift, type DriftResult } from "@/lib/sync-drift";
 import { findConflicts, type ConflictReport } from "@/lib/conflicts";
 import { parseBlackouts, blackoutsToBusy } from "@/lib/blackouts";
 import { dedupeScheduleById } from "@/lib/scoring-pack";
+import {
+  applySignals,
+  detectMissedSessions,
+  markMissedSessionsApplied,
+  parseHourUtility,
+  stringifyHourUtility,
+  SIGNAL_MAGNITUDE,
+} from "@/lib/hour-utility";
 import type { LearningPlan, TaskCompletion } from "@prisma/client";
 import type { ScheduledSession } from "@/types/plan";
 
@@ -89,17 +97,73 @@ export async function loadPlanState(args: {
     : { lockedConflicts: [], unlockedConflictIds: [] };
 
   let effectivePlan = plan;
+  let workingSchedule = drift.schedule;
   if (verdantRead.ok && (drift.adoptedIds.length > 0 || drift.removedIds.length > 0)) {
     const updated = await prisma.learningPlan.update({
       where: { id: planId },
-      data: { scheduleJson: JSON.stringify(drift.schedule) },
+      data: { scheduleJson: JSON.stringify(workingSchedule) },
     });
     effectivePlan = updated;
   }
 
+  // Lazy missed-signal detection: any session whose end is >24h in the past,
+  // never completed, and not previously credited gets a "missed" signal
+  // applied to the user's hour-utility map. The session is then stamped so
+  // we don't double-credit on the next read. ReviewInstance completions are
+  // tracked separately (no TaskCompletion row), so look those up too.
+  try {
+    const completedReviews = await prisma.reviewInstance.findMany({
+      where: { planId, completedAt: { not: null } },
+      select: { id: true },
+    });
+    const completedIds = new Set<string>([
+      ...completions.map((c) => c.taskId),
+      ...completedReviews.map((r) => r.id),
+    ]);
+    const now = new Date();
+    const missed = detectMissedSessions({
+      schedule: workingSchedule,
+      completedTaskIds: completedIds,
+      now,
+    });
+    if (missed.length > 0) {
+      const pref = await prisma.userPreference.findUnique({
+        where: { userId },
+        select: { hourUtility: true },
+      });
+      const cur = parseHourUtility(pref?.hourUtility ?? null);
+      const next = applySignals(
+        cur,
+        missed.map((m) => ({
+          at: m.scheduledStart,
+          magnitude: SIGNAL_MAGNITUDE.missed,
+        })),
+        now
+      );
+      const stampedSchedule = markMissedSessionsApplied(
+        workingSchedule,
+        new Set(missed.map((m) => m.sessionId)),
+        now
+      );
+      await Promise.all([
+        prisma.userPreference.update({
+          where: { userId },
+          data: { hourUtility: stringifyHourUtility(next) },
+        }),
+        prisma.learningPlan.update({
+          where: { id: planId },
+          data: { scheduleJson: JSON.stringify(stampedSchedule) },
+        }),
+      ]);
+      workingSchedule = stampedSchedule;
+    }
+  } catch {
+    // Best-effort — never block dashboard load on signal bookkeeping.
+  }
+
   return {
     plan: effectivePlan,
-    schedule: drift.schedule,
+    schedule: workingSchedule,
     completions,
     drift,
     conflicts,

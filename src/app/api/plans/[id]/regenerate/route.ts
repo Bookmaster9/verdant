@@ -13,6 +13,7 @@ import {
 import { loadProjectedReviewTasks } from "@/lib/load-projected-reviews";
 import type { ScheduledSession, SproutPlan } from "@/types/plan";
 import { parseTimeWindowsJson } from "@/lib/default-preferences";
+import { parseHourUtility } from "@/lib/hour-utility";
 import {
   applyYoutubeVideoLengthsToLessonMinutes,
   enrichSproutWithYoutubePlaylist,
@@ -68,10 +69,9 @@ export async function POST(request: Request, { params }: RouteParams) {
 
   const pref = await ensureUserPreferences(s.user.id);
   const tw = parseTimeWindowsJson(pref.timeWindows);
-  const slotEffectiveness = JSON.parse(
-    pref.slotEffectiveness || "{}"
-  ) as Record<string, number>;
+  const hourUtility = parseHourUtility(pref.hourUtility);
   const startDate = new Date();
+  const now = startDate;
   const deadline = new Date(plan.deadline.getTime() + 864e5);
 
   const busyRead = await getExternalBusy({
@@ -106,7 +106,8 @@ export async function POST(request: Request, { params }: RouteParams) {
       weeks,
       timeWindows: tw,
       busy: externalBusy,
-      slotEffectiveness,
+      hourUtility,
+      now,
     });
     let sprout = await generatePlanWithAI({
       targetSkill: plan.targetSkill,
@@ -170,7 +171,9 @@ export async function POST(request: Request, { params }: RouteParams) {
     timeWindows: tw,
     busy: [...externalBusy, ...lockedAsBusy, ...blackoutBusy, ...forbidBusy],
     maxMinutesPerDay: pref.maxMinutesDay,
-    slotEffectiveness,
+    hourUtility,
+    now,
+    planId: id,
     placementRules: persistentRules,
     phaseCount: sproutOut.phases.length,
   });

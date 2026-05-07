@@ -1,10 +1,9 @@
 /**
- * Slot-scoring packer (design Q5).
+ * Slot-scoring packer.
  *
- * Replaces the old greedy bucketer when tasks carry hint fields. For each task,
- * in dependency-aware order, the packer enumerates feasible slots in the user's
- * free intervals, scores each candidate against the task's hints + history, and
- * places the task in the highest-scoring slot.
+ * For each task, in dependency-aware order, the packer enumerates feasible
+ * slots in the user's free intervals, scores each candidate, then picks one
+ * via softmax sampling over the top-K candidates.
  *
  * Hard constraints (filters):
  *   - Slot fits the duration contiguously inside a free interval.
@@ -13,11 +12,22 @@
  *   - mustFollowTaskId predecessor placed earlier and `minDaysAfterPredecessor` honored if feasible.
  *   - Daily cap from `maxMinutesPerDay`.
  *
- * Soft preferences (weights):
- *   - `preferredTimeOfDay` match.
- *   - `weekIndex`/`dayOffsetInWeek` proximity (renamed in design as "ideal" hints).
- *   - Slot effectiveness from past ratings.
- *   - `preferStandalone` bonus when the day is empty.
+ * Soft scoring (4 buckets):
+ *   - Learned hour-of-week utility (`hourUtility` map, duration-weighted).
+ *   - Task-structural: time-of-day match, week-index/day-offset proximity,
+ *     FSRS dueAt proximity, preferStandalone bonus.
+ *   - Fern declarative rules (`prefer` bonuses).
+ *   - Calendar mask: hard exclusion via busy-interval filtering.
+ *
+ * Placement: top-5 candidates by score, softmax sampled with temperature 5.
+ * If the top candidate beats #2 by ≥25 points, sampling is skipped (greedy).
+ * RNG is seeded by `hash(planId + taskId)` for determinism — same input
+ * always yields the same placement.
+ *
+ * Two-phase ordering: tasks with explicit constraints (Fern prefer/pin rules,
+ * FSRS-driven `dueAt`) place before unconstrained tasks within the same
+ * topological layer, so explicit user preferences and review schedules win
+ * the contention they need.
  */
 import { addDays, getDay, startOfDay } from "date-fns";
 import type {
@@ -28,7 +38,14 @@ import type {
 } from "@/types/plan";
 import type { BusyInterval } from "@/lib/calendar-read";
 import { freeIntervalsForDay } from "@/lib/free-intervals";
-import { preferRuleScore } from "@/lib/placement-rules";
+import {
+  preferRuleScore,
+  taskMatchesFilter,
+} from "@/lib/placement-rules";
+import {
+  readUtilityForSlot,
+  type HourUtilityMap,
+} from "@/lib/hour-utility";
 
 export interface ScoringContext {
   startDate: Date;
@@ -36,8 +53,15 @@ export interface ScoringContext {
   timeWindows: TimeWindows;
   busy: BusyInterval[];
   maxMinutesPerDay: number;
-  /** Slot effectiveness ratings keyed "<dow>-<HH>". */
-  slotEffectiveness: Record<string, number>;
+  /** Learned hour-utility map (signed accumulator with lazy decay). */
+  hourUtility: HourUtilityMap;
+  /** "Now" timestamp used for decay-on-read against `hourUtility`. */
+  now: Date;
+  /**
+   * Stable identifier used to seed the per-task RNG. Same `planId` + same task
+   * id = same softmax sample, so re-packs with unchanged inputs reproduce.
+   */
+  planId: string;
   /**
    * Per-day minutes already consumed by entries the packer should *not* place
    * (i.e. existing locked schedule entries treated as busy). Lets the packer
@@ -80,6 +104,12 @@ interface PlacementRecord {
 
 const PLAN_DAY_LIMIT = 400;
 
+// --- Sampling parameters (grill-me Q10) -------------------------------------
+const SOFTMAX_TOP_K = 5;
+const SOFTMAX_TEMPERATURE = 5;
+/** If top-1 beats top-2 by this many points, skip softmax and pick top-1. */
+const GREEDY_DOMINANCE_THRESHOLD = 25;
+
 function clampDur(task: PlanTask, ctx: ScoringContext): number {
   return Math.max(15, Math.min(task.minutes, ctx.maxMinutesPerDay));
 }
@@ -92,16 +122,47 @@ function dowMonZero(d: Date): number {
   return (getDay(d) + 6) % 7; // 0=Mon
 }
 
-function slotEffKey(d: Date): string {
-  return `${getDay(d)}-${String(d.getHours()).padStart(2, "0")}`;
+// -----------------------------------------------------------------------------
+// Two-phase classification
+// -----------------------------------------------------------------------------
+
+/**
+ * Phase 1 = tasks with explicit constraints (active Fern `prefer`/`pin` rules
+ * targeting them, or an FSRS `dueAt`). Phase 2 = everything else. Phase 1 sorts
+ * before Phase 2 within the same topological layer so they claim the slots
+ * they care about before unconstrained tasks burn the inventory.
+ */
+function isPhaseOne(
+  task: PlanTask,
+  rules: PlacementRule[] | undefined,
+  phaseCount: number
+): boolean {
+  if (task.dueAt) return true;
+  if (!rules || rules.length === 0) return false;
+  for (const rule of rules) {
+    if (rule.kind === "prefer") {
+      if (taskMatchesFilter(task, rule.filter, phaseCount)) return true;
+    } else if (rule.kind === "pin") {
+      // pin rules target a session id, not a task id directly. Treat any
+      // pin rule as constraint-bearing for the related task — the packer
+      // doesn't actually consume pin rules (the edit-ops applier does), but
+      // tasks under active edit deserve phase-1 priority anyway.
+      return true;
+    }
+  }
+  return false;
 }
 
 /**
- * Topological sort: every task whose predecessor is in the set must come after.
- * Then within an independent layer, sort by priority (core first), then weekIndex,
- * then dayOffsetInWeek.
+ * Topological sort: every task whose predecessor is in the set must come
+ * after. Within a layer, phase-1 (explicitly-constrained) tasks sort first,
+ * then by priority (core before stretch), weekIndex, dayOffsetInWeek.
  */
-function topologicalOrder(tasks: PlanTask[]): PlanTask[] {
+function topologicalOrder(
+  tasks: PlanTask[],
+  rules: PlacementRule[] | undefined,
+  phaseCount: number
+): PlanTask[] {
   const byId = new Map(tasks.map((t) => [t.id, t] as const));
   const remaining = new Set(tasks.map((t) => t.id));
   const out: PlanTask[] = [];
@@ -125,6 +186,9 @@ function topologicalOrder(tasks: PlanTask[]): PlanTask[] {
       break;
     }
     ready.sort((a, b) => {
+      const phA = isPhaseOne(a, rules, phaseCount) ? 0 : 1;
+      const phB = isPhaseOne(b, rules, phaseCount) ? 0 : 1;
+      if (phA !== phB) return phA - phB;
       const pa = a.priority ?? "core";
       const pb = b.priority ?? "core";
       if (pa !== pb) return pa === "core" ? -1 : 1;
@@ -176,6 +240,15 @@ function enumerateCandidates(
   return candidates;
 }
 
+// -----------------------------------------------------------------------------
+// Scoring (four buckets)
+// -----------------------------------------------------------------------------
+
+/**
+ * Time-of-day match for the task's `preferredTimeOfDay` hint. Reduced from
+ * the legacy weights (was ±8 / −2) because learned hour-utility now carries
+ * the same kind of preference signal more directly.
+ */
 function todMatchScore(task: PlanTask, slot: Candidate): number {
   const tod = task.preferredTimeOfDay ?? "any";
   if (tod === "any") return 0;
@@ -188,9 +261,9 @@ function todMatchScore(task: PlanTask, slot: Candidate): number {
     (tod === "afternoon" && isAfternoon) ||
     (tod === "evening" && isEvening)
   ) {
-    return 8;
+    return 4;
   }
-  return -2;
+  return -1;
 }
 
 function idealWeekScore(task: PlanTask, slot: Candidate, ctx: ScoringContext): number {
@@ -206,11 +279,6 @@ function idealDayScore(task: PlanTask, slot: Candidate): number {
   const slotDow = dowMonZero(slot.start);
   const delta = Math.abs(slotDow - task.dayOffsetInWeek);
   return Math.max(0, 6 - delta * 2);
-}
-
-function effectivenessScore(slot: Candidate, ctx: ScoringContext): number {
-  const key = slotEffKey(slot.start);
-  return (ctx.slotEffectiveness[key] ?? 0) * 1.0;
 }
 
 /**
@@ -234,10 +302,41 @@ function standaloneScore(
 ): number {
   if (!task.preferStandalone) return 0;
   const used = dailyMinutesUsed.get(dayKey(slot.start)) ?? 0;
-  return used === 0 ? 4 : -6; // strongly prefer empty days; penalize sharing
+  return used === 0 ? 4 : -6;
 }
 
-function ruleScore(task: PlanTask, slot: Candidate, ctx: ScoringContext): number {
+/** Bucket: learned hour-of-week utility, duration-weighted across cells. */
+function learnedUtilityScore(slot: Candidate, ctx: ScoringContext): number {
+  return readUtilityForSlot(
+    ctx.hourUtility,
+    slot.start,
+    slot.durationMinutes,
+    ctx.now
+  );
+}
+
+/** Bucket: task-structural (the four hint-driven scores combined). */
+function taskStructuralScore(
+  task: PlanTask,
+  slot: Candidate,
+  ctx: ScoringContext,
+  dailyMinutesUsed: Map<string, number>
+): number {
+  return (
+    todMatchScore(task, slot) +
+    idealWeekScore(task, slot, ctx) +
+    idealDayScore(task, slot) +
+    standaloneScore(task, slot, dailyMinutesUsed) +
+    dueAtProximityScore(task, slot)
+  );
+}
+
+/** Bucket: Fern declarative rules. */
+function fernRuleScore(
+  task: PlanTask,
+  slot: Candidate,
+  ctx: ScoringContext
+): number {
   if (!ctx.placementRules || ctx.placementRules.length === 0) return 0;
   return preferRuleScore(task, slot, ctx.placementRules, ctx.phaseCount ?? 1);
 }
@@ -249,15 +348,79 @@ function scoreCandidate(
   dailyMinutesUsed: Map<string, number>
 ): number {
   return (
-    todMatchScore(task, slot) +
-    idealWeekScore(task, slot, ctx) +
-    idealDayScore(task, slot) +
-    effectivenessScore(slot, ctx) +
-    standaloneScore(task, slot, dailyMinutesUsed) +
-    dueAtProximityScore(task, slot) +
-    ruleScore(task, slot, ctx)
+    learnedUtilityScore(slot, ctx) +
+    taskStructuralScore(task, slot, ctx, dailyMinutesUsed) +
+    fernRuleScore(task, slot, ctx)
   );
 }
+
+// -----------------------------------------------------------------------------
+// Stochastic placement (top-K softmax sampling)
+// -----------------------------------------------------------------------------
+
+/** FNV-1a 32-bit hash → seed for mulberry32. Deterministic and cheap. */
+function hashSeed(s: string): number {
+  let h = 2_166_136_261;
+  for (let i = 0; i < s.length; i++) {
+    h ^= s.charCodeAt(i);
+    h = Math.imul(h, 16_777_619);
+  }
+  return h >>> 0;
+}
+
+function mulberry32(seed: number): () => number {
+  let s = seed | 0;
+  return () => {
+    s = (s + 0x6d2b79f5) | 0;
+    let t = s;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4_294_967_296;
+  };
+}
+
+/**
+ * Pick a candidate from `candidates` given parallel `scores`. Returns the
+ * index. Top-K filtering, greedy escape on dominance, and softmax with
+ * temperature `T` for the rest.
+ */
+function pickCandidate(
+  scores: number[],
+  rand: () => number
+): number {
+  if (scores.length === 0) return -1;
+  if (scores.length === 1) return 0;
+
+  // Sort indices by score desc and clip to top-K.
+  const indexed = scores.map((s, i) => ({ s, i }));
+  indexed.sort((a, b) => b.s - a.s);
+  const topK = indexed.slice(0, SOFTMAX_TOP_K);
+
+  // Greedy escape: top-1 dominates top-2 by enough that exploration is harmful.
+  if (
+    topK.length >= 2 &&
+    topK[0].s - topK[1].s >= GREEDY_DOMINANCE_THRESHOLD
+  ) {
+    return topK[0].i;
+  }
+  if (topK.length === 1) return topK[0].i;
+
+  // Numerically-stable softmax: subtract the max before exponentiation.
+  const maxS = topK[0].s;
+  const exps = topK.map((c) => Math.exp((c.s - maxS) / SOFTMAX_TEMPERATURE));
+  const sum = exps.reduce((a, b) => a + b, 0);
+  const r = rand() * sum;
+  let acc = 0;
+  for (let i = 0; i < exps.length; i++) {
+    acc += exps[i];
+    if (r <= acc) return topK[i].i;
+  }
+  return topK[topK.length - 1].i;
+}
+
+// -----------------------------------------------------------------------------
+// Schedule emission
+// -----------------------------------------------------------------------------
 
 function mergeIntoDailyAgendas(
   placements: PlacementRecord[]
@@ -338,24 +501,8 @@ function mergeIntoDailyAgendas(
 }
 
 /**
- * Add `newTasks` to an existing schedule without disturbing any current entry.
- *
- * Use case: the FSRS chain extends after a rating, or a journal entry is
- * re-opened — we need to slot a few new tasks in but the user's existing past +
- * future entries must stay exactly where they are. The packer treats every
- * existing entry as a hard busy block, seeds `dailyMinutesUsed` with the
- * minutes those entries already consume, then runs the standard scoring pack
- * on the new tasks.
- *
- * Returns the merged schedule (existing + newly placed) sorted by start time
- * plus any overflow that didn't fit before the deadline.
- */
-/**
  * Defensive dedup: keep the FIRST occurrence of each session id, drop subsequent
- * ones. The packer's normal output is unique-by-id, but any code path that
- * concatenates `[past, lockedFuture, ...newlyPacked]` is one mistake away from
- * collisions, and React keys break loudly on dupes. Cheaper to scrub at the
- * boundary than to track every merge site.
+ * ones. Used when concatenating `[past, lockedFuture, ...newlyPacked]`.
  */
 export function dedupeScheduleById(
   sessions: ScheduledSession[]
@@ -378,17 +525,15 @@ export function packIntoExistingSchedule(args: {
   timeWindows: TimeWindows;
   externalBusy: BusyInterval[];
   maxMinutesPerDay: number;
-  slotEffectiveness: Record<string, number>;
+  hourUtility: HourUtilityMap;
+  now: Date;
+  planId: string;
   /**
    * Optional pre-existing per-day minutes from sources outside `existingSchedule`
    * — typically OTHER active plans' schedules (multi-sprout shared-cap support).
-   * Merged into the seed map alongside what's computed from `existingSchedule`,
-   * so the daily cap reflects the user's full cross-plan picture.
    */
   extraDailyMinutesUsed?: Map<string, number>;
-  /** Forwarded to packWithScoring's ScoringContext. */
   placementRules?: PlacementRule[];
-  /** Forwarded to packWithScoring's ScoringContext. */
   phaseCount?: number;
 }): { schedule: ScheduledSession[]; overflow: PlanTask[] } {
   const existingAsBusy: BusyInterval[] = args.existingSchedule.map((sess) => ({
@@ -396,8 +541,6 @@ export function packIntoExistingSchedule(args: {
     end: new Date(sess.end),
   }));
 
-  // Per-day minutes already consumed by existing entries. Sum each entry's
-  // duration (in minutes) into the bucket for its local-day key.
   const initialDailyMinutesUsed = new Map<string, number>(
     args.extraDailyMinutesUsed ?? []
   );
@@ -415,7 +558,9 @@ export function packIntoExistingSchedule(args: {
     timeWindows: args.timeWindows,
     busy: [...existingAsBusy, ...args.externalBusy],
     maxMinutesPerDay: args.maxMinutesPerDay,
-    slotEffectiveness: args.slotEffectiveness,
+    hourUtility: args.hourUtility,
+    now: args.now,
+    planId: args.planId,
     initialDailyMinutesUsed,
     placementRules: args.placementRules,
     phaseCount: args.phaseCount,
@@ -431,7 +576,11 @@ export function packWithScoring(
   tasks: PlanTask[],
   ctx: ScoringContext
 ): PackResult {
-  const ordered = topologicalOrder(tasks);
+  const ordered = topologicalOrder(
+    tasks,
+    ctx.placementRules,
+    ctx.phaseCount ?? 1
+  );
   const placedById = new Map<string, PlacementRecord>();
   const placedBusy: BusyInterval[] = [];
   const dailyMinutesUsed = new Map<string, number>(
@@ -460,16 +609,13 @@ export function packWithScoring(
       overflow.push(task);
       continue;
     }
-    let best = candidates[0];
-    let bestScore = scoreCandidate(task, best, ctx, dailyMinutesUsed);
-    for (let i = 1; i < candidates.length; i++) {
-      const c = candidates[i];
-      const s = scoreCandidate(task, c, ctx, dailyMinutesUsed);
-      if (s > bestScore) {
-        bestScore = s;
-        best = c;
-      }
-    }
+    const scores = candidates.map((c) =>
+      scoreCandidate(task, c, ctx, dailyMinutesUsed)
+    );
+    const seed = hashSeed(`${ctx.planId}|${task.id}`);
+    const rand = mulberry32(seed);
+    const pickedIdx = pickCandidate(scores, rand);
+    const best = candidates[pickedIdx];
     placedById.set(task.id, { task, start: best.start, end: best.end });
     placedBusy.push({ start: best.start, end: best.end });
     const k = dayKey(best.start);

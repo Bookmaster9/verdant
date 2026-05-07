@@ -90,6 +90,7 @@ interface NewPlanFormProps {
   initialTimeWindowsJson: string;
   initialMaxMinutesDay: number;
   initialPushToCalendar: boolean;
+  initialHourUtilityJson?: string | null;
 }
 
 export function NewPlanForm({
@@ -97,6 +98,7 @@ export function NewPlanForm({
   initialTimeWindowsJson,
   initialMaxMinutesDay,
   initialPushToCalendar,
+  initialHourUtilityJson,
 }: NewPlanFormProps) {
   const r = useRouter();
   const [onboardingOpen, setOnboardingOpen] = useState(showOnboarding);
@@ -261,6 +263,7 @@ export function NewPlanForm({
         initialTimeWindowsJson={initialTimeWindowsJson}
         initialMaxMinutesDay={initialMaxMinutesDay}
         initialPushToCalendar={initialPushToCalendar}
+        initialHourUtilityJson={initialHourUtilityJson}
         onDismiss={() => setOnboardingOpen(false)}
       />
     )}

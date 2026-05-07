@@ -226,8 +226,9 @@ export function PlanActions({
             onClick={rebuildSchedule}
             disabled={busy}
             className="btn sm ghost"
+            title="Re-pack future tasks against your current learned preferences. Locked sessions stay put."
           >
-            rebuild schedule
+            re-optimize
           </button>
           <button
             type="button"

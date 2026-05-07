@@ -1,14 +1,19 @@
 import type { TimeWindow, TimeWindows } from "@/types/plan";
 
-/** Mon–Fri 7–10p, Sat 10–1, Sun 3–6p */
+/**
+ * Default mask: 06:00 → midnight, every day. Anything between midnight and
+ * 6am is opted-out by default (sleep). Users opt back in via the heatmap.
+ * Keys are `Date.getDay()` indices (Sun=0..Sat=6).
+ */
+const DEFAULT_DAY_WINDOWS = [{ start: "06:00", end: "24:00" }];
 export const DEFAULT_TIME_WINDOWS: TimeWindows = {
-  "0": [{ start: "15:00", end: "18:00" }],
-  "1": [{ start: "19:00", end: "22:00" }],
-  "2": [{ start: "19:00", end: "22:00" }],
-  "3": [{ start: "19:00", end: "22:00" }],
-  "4": [{ start: "19:00", end: "22:00" }],
-  "5": [{ start: "19:00", end: "22:00" }],
-  "6": [{ start: "10:00", end: "13:00" }],
+  "0": DEFAULT_DAY_WINDOWS,
+  "1": DEFAULT_DAY_WINDOWS,
+  "2": DEFAULT_DAY_WINDOWS,
+  "3": DEFAULT_DAY_WINDOWS,
+  "4": DEFAULT_DAY_WINDOWS,
+  "5": DEFAULT_DAY_WINDOWS,
+  "6": DEFAULT_DAY_WINDOWS,
 };
 
 export function defaultTimeWindowsJson(): string {

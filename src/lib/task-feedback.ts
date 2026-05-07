@@ -12,7 +12,13 @@ import { applyRating, projectReviewChain, type UiRating } from "@/lib/fsrs";
 import { reviewInstanceToTask } from "@/lib/fsrs-to-tasks";
 import { packIntoExistingSchedule } from "@/lib/scoring-pack";
 import { loadCrossPlanBusy } from "@/lib/cross-plan-busy";
-import { smoothUpdate, slotKeyFromIso } from "@/lib/effectiveness";
+import {
+  applySignal,
+  completionSignalFor,
+  parseHourUtility,
+  stringifyHourUtility,
+  type HourUtilityMap,
+} from "@/lib/hour-utility";
 import type { ScheduledSession, SproutPlan } from "@/types/plan";
 
 export type TaskFeedbackResult =
@@ -32,6 +38,11 @@ export type TaskFeedbackResult =
  *
  * Past sessions are never moved by this code path. Newly-projected reviews are
  * placed into open slots only.
+ *
+ * Hour-utility signals: when a task is committed (completed:true), the
+ * scheduled session is converted to either an on-time or early-completion
+ * signal (via `completionSignalFor`) and applied to the user's `hourUtility`
+ * map. Re-open does not produce a signal.
  */
 export async function applyTaskFeedback(args: {
   planId: string;
@@ -53,7 +64,6 @@ export async function applyTaskFeedback(args: {
   });
   const isReview = !!(reviewInstance && reviewInstance.planId === planId);
 
-  // Resolve current state for validation + decisions.
   let currentRating: number | null;
   let currentCompleted: boolean;
   if (isReview) {
@@ -67,11 +77,9 @@ export async function applyTaskFeedback(args: {
     currentCompleted = tc?.completed ?? false;
   }
 
-  // Hard rule: completing requires a rating (in payload or on record).
   if (completed === true && rating == null && currentRating == null) {
     return { ok: false, error: "Rate the task before marking it done.", status: 400 };
   }
-  // Re-rate without a completion change is only valid for already-completed tasks.
   if (completed === undefined && rating != null && !currentCompleted) {
     return {
       ok: false,
@@ -79,21 +87,18 @@ export async function applyTaskFeedback(args: {
       status: 400,
     };
   }
-  // Empty payload — nothing to do.
   if (completed === undefined && rating == null) {
     return { ok: true, scheduleJson: args.currentScheduleJson };
   }
 
   // --- Schedule helpers (closures over `sessions`) ---
 
-  /** Find the schedule entry that contains this taskId (single or agenda). */
   const sessIdx = sessions.findIndex(
     (x) => x.planTaskId === taskId || x.agenda?.some((a) => a.planTaskId === taskId)
   );
   const sess = sessIdx >= 0 ? sessions[sessIdx] : null;
   const sessIsFuture = !!sess && new Date(sess.start) > now;
 
-  /** Remove this task from its session, dropping the session if it becomes empty. */
   function removeTaskFromSchedule(schedule: ScheduledSession[]): ScheduledSession[] {
     if (sessIdx < 0) return schedule;
     return schedule.flatMap((entry, i) => {
@@ -119,7 +124,6 @@ export async function applyTaskFeedback(args: {
     });
   }
 
-  /** Lazy load the things needed to place a new entry; cached across calls. */
   let _ctx: {
     timeWindows: ReturnType<typeof parseTimeWindowsJson>;
     externalBusy: Awaited<ReturnType<typeof getExternalBusy>>["intervals"];
@@ -127,7 +131,7 @@ export async function applyTaskFeedback(args: {
     forbidBusy: ReturnType<typeof compileForbidRulesToBusy>;
     deadlinePlus1: Date;
     maxMinutesPerDay: number;
-    slotEffectiveness: Record<string, number>;
+    hourUtility: HourUtilityMap;
     crossPlanBusy: Awaited<ReturnType<typeof loadCrossPlanBusy>>["busy"];
     crossPlanDailyMinutes: Awaited<
       ReturnType<typeof loadCrossPlanBusy>
@@ -150,9 +154,7 @@ export async function applyTaskFeedback(args: {
     const tw = parseTimeWindowsJson(pref.timeWindows);
     const externalBusy = calRead.intervals;
     const blackoutBusy = blackoutsToBusy(parseBlackouts(plan.manualBlackouts));
-    const slotEffectiveness = JSON.parse(
-      pref.slotEffectiveness || "{}"
-    ) as Record<string, number>;
+    const hourUtility = parseHourUtility(pref.hourUtility);
     const placementRules = parsePlacementRules(plan.placementRules);
     const deadlinePlus1 = new Date(plan.deadline.getTime() + 864e5);
     const forbidBusy = compileForbidRulesToBusy(placementRules, {
@@ -167,7 +169,7 @@ export async function applyTaskFeedback(args: {
       forbidBusy,
       deadlinePlus1,
       maxMinutesPerDay: pref.maxMinutesDay,
-      slotEffectiveness,
+      hourUtility,
       crossPlanBusy: crossPlan.busy,
       crossPlanDailyMinutes: crossPlan.initialDailyMinutesUsed,
       placementRules,
@@ -176,14 +178,26 @@ export async function applyTaskFeedback(args: {
     return _ctx;
   }
 
-  async function updateSlotEffectiveness(slotIso: string, r: number) {
-    const key = slotKeyFromIso(slotIso);
+  /**
+   * Apply a completion-shaped utility signal for a session that just got
+   * committed. Classification (early vs. on-time) is decided by
+   * `completionSignalFor`. Reads the current `hourUtility`, applies one
+   * signal, writes it back. Idempotent enough for the rate/re-rate loop:
+   * re-rating an already-completed task does NOT re-apply the signal because
+   * we only call this from the commit path.
+   */
+  async function recordCompletionSignal(scheduledStart: Date | null) {
+    const signal = completionSignalFor({
+      scheduledStart,
+      completedAt: now,
+    });
+    if (!signal) return;
     const pref = await ensureUserPreferences(userId);
-    const cur = JSON.parse(pref.slotEffectiveness || "{}") as Record<string, number>;
-    const updated = JSON.stringify(smoothUpdate(cur, key, r));
+    const cur = parseHourUtility(pref.hourUtility);
+    const next = applySignal(cur, signal.at, signal.magnitude, now);
     await prisma.userPreference.update({
       where: { userId },
-      data: { slotEffectiveness: updated },
+      data: { hourUtility: stringifyHourUtility(next) },
     });
   }
 
@@ -201,6 +215,7 @@ export async function applyTaskFeedback(args: {
         where: { id: ri.id },
         data: { projected: false, completedAt: now, rating: finalRating },
       });
+      const scheduledStart = sess ? new Date(sess.start) : null;
       if (sessIsFuture) outSchedule = removeTaskFromSchedule(outSchedule);
       if (ratingChanged) {
         outSchedule = await advanceFsrsAndPlaceNewReviews({
@@ -213,7 +228,8 @@ export async function applyTaskFeedback(args: {
           ctxLoader: placementCtx,
         });
       }
-      if (rating != null && sess) await updateSlotEffectiveness(sess.start, rating);
+      // Only credit a new utility signal on first commit, not on re-rate.
+      if (!currentCompleted) await recordCompletionSignal(scheduledStart);
     } else if (completed === false) {
       // Re-open: leave FSRS state alone (per Q10 (B)).
       await prisma.reviewInstance.update({
@@ -245,14 +261,16 @@ export async function applyTaskFeedback(args: {
           ...ctx.forbidBusy,
         ],
         maxMinutesPerDay: ctx.maxMinutesPerDay,
-        slotEffectiveness: ctx.slotEffectiveness,
+        hourUtility: ctx.hourUtility,
+        now,
+        planId,
         extraDailyMinutesUsed: ctx.crossPlanDailyMinutes,
         placementRules: ctx.placementRules,
         phaseCount: ctx.phaseCount,
       });
       outSchedule = result.schedule;
     } else if (rating != null) {
-      // Re-rate an already-completed review.
+      // Re-rate an already-committed review (no completion signal).
       await prisma.reviewInstance.update({
         where: { id: ri.id },
         data: { rating },
@@ -268,7 +286,6 @@ export async function applyTaskFeedback(args: {
           ctxLoader: placementCtx,
         });
       }
-      if (sess) await updateSlotEffectiveness(sess.start, rating);
     }
 
     return { ok: true, scheduleJson: JSON.stringify(outSchedule) };
@@ -288,10 +305,10 @@ export async function applyTaskFeedback(args: {
       },
       update: { completed: true, completedAt: now, rating: finalRating },
     });
+    const scheduledStart = sess ? new Date(sess.start) : null;
     if (sessIsFuture) outSchedule = removeTaskFromSchedule(outSchedule);
-    if (rating != null && sess) await updateSlotEffectiveness(sess.start, rating);
+    if (!currentCompleted) await recordCompletionSignal(scheduledStart);
   } else if (completed === false) {
-    // Re-open: clear completion + rating, place a new schedule entry.
     await prisma.taskCompletion.upsert({
       where: { planId_taskId: { planId, taskId } },
       create: {
@@ -321,7 +338,9 @@ export async function applyTaskFeedback(args: {
           ...ctx.forbidBusy,
         ],
         maxMinutesPerDay: ctx.maxMinutesPerDay,
-        slotEffectiveness: ctx.slotEffectiveness,
+        hourUtility: ctx.hourUtility,
+        now,
+        planId,
         extraDailyMinutesUsed: ctx.crossPlanDailyMinutes,
         placementRules: ctx.placementRules,
         phaseCount: ctx.phaseCount,
@@ -333,7 +352,7 @@ export async function applyTaskFeedback(args: {
       where: { planId_taskId: { planId, taskId } },
       data: { rating },
     });
-    if (sess) await updateSlotEffectiveness(sess.start, rating);
+    // Pure re-rate without a fresh commit — no utility signal.
   }
 
   return { ok: true, scheduleJson: JSON.stringify(outSchedule) };
@@ -366,7 +385,7 @@ async function advanceFsrsAndPlaceNewReviews(args: {
     forbidBusy: ReturnType<typeof compileForbidRulesToBusy>;
     deadlinePlus1: Date;
     maxMinutesPerDay: number;
-    slotEffectiveness: Record<string, number>;
+    hourUtility: HourUtilityMap;
     crossPlanBusy: Awaited<ReturnType<typeof loadCrossPlanBusy>>["busy"];
     crossPlanDailyMinutes: Awaited<
       ReturnType<typeof loadCrossPlanBusy>
@@ -397,8 +416,6 @@ async function advanceFsrsAndPlaceNewReviews(args: {
     },
   });
 
-  // Find the IDs of the projected reviews we're about to drop, so we can clean
-  // up their stale schedule entries (they now point to dead ReviewInstance ids).
   const oldProjected = await prisma.reviewInstance.findMany({
     where: {
       lessonStateId: ls.id,
@@ -416,8 +433,6 @@ async function advanceFsrsAndPlaceNewReviews(args: {
     },
   });
 
-  // Drop schedule entries that referenced any of the now-deleted ReviewInstances.
-  // This is a surgical removal — only entries belonging to the dropped chain.
   const outSchedule = schedule.flatMap((entry) => {
     const containsId = (id: string) =>
       entry.planTaskId === id ||
@@ -444,7 +459,6 @@ async function advanceFsrsAndPlaceNewReviews(args: {
     ];
   });
 
-  // Project the new chain and create the new ReviewInstance rows.
   const dueDates = projectReviewChain({
     state: next,
     lessonEnd: new Date(dueAt.getTime() - 86_400_000),
@@ -466,19 +480,10 @@ async function advanceFsrsAndPlaceNewReviews(args: {
     )
   );
 
-  // Look up the parent lesson title so the new schedule entries read nicely.
   const sproutPlan = JSON.parse(plan.planJson || "{}") as SproutPlan;
   const parent = (sproutPlan.tasks ?? []).find((t) => t.id === ls.lessonId);
   const lessonTitle = parent?.title ?? "lesson";
 
-  // Hand the entire batch of new reviews to the scoring packer. It treats
-  // every existing schedule entry as a hard busy block, seeds the daily-cap
-  // counter from existing minutes, and places each review into the highest-
-  // scoring open slot — respecting `maxMinutesPerDay`, slot effectiveness, and
-  // the FSRS due-date proximity preference all at once. Critically, the packer
-  // never touches existing entries, so the "no displacement" rule still holds.
-  // Any review it can't fit before the deadline lands in `overflow` and stays
-  // unscheduled in the DB (user will see it in to-do without a planned time).
   const ctx = await args.ctxLoader();
   const reviewTasks = newInstances.map((ri) =>
     reviewInstanceToTask({
@@ -501,7 +506,9 @@ async function advanceFsrsAndPlaceNewReviews(args: {
       ...ctx.forbidBusy,
     ],
     maxMinutesPerDay: ctx.maxMinutesPerDay,
-    slotEffectiveness: ctx.slotEffectiveness,
+    hourUtility: ctx.hourUtility,
+    now,
+    planId: args.planId,
     extraDailyMinutesUsed: ctx.crossPlanDailyMinutes,
     placementRules: ctx.placementRules,
     phaseCount: ctx.phaseCount,

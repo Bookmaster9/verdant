@@ -47,17 +47,15 @@ async function main() {
       where: { userId: plan.userId },
     });
     const tw = parseTimeWindowsJson(pref?.timeWindows ?? "{}");
-    const slotEff = JSON.parse(pref?.slotEffectiveness || "{}") as Record<
-      string,
-      number
-    >;
     const ctx = {
       startDate: plan.startDate,
       deadline: plan.deadline,
       timeWindows: tw,
       busy: [],
       maxMinutesPerDay: pref?.maxMinutesDay ?? 90,
-      slotEffectiveness: slotEff,
+      hourUtility: {},
+      now: new Date(),
+      planId: plan.id,
     };
     const pass1 = packWithScoring(nonReviewTasks, ctx);
 

@@ -9,6 +9,10 @@ import { addDays, getDay, startOfDay } from "date-fns";
 import type { TimeWindows } from "@/types/plan";
 import type { BusyInterval } from "@/lib/calendar-read";
 import { freeIntervalsForDay } from "@/lib/free-intervals";
+import {
+  preferredTimeOfDayHistogram,
+  type HourUtilityMap,
+} from "@/lib/hour-utility";
 
 export interface PerWeekAvailability {
   weekIndex: number;
@@ -71,41 +75,16 @@ function noteForWeek(
   return `mostly blocked ${labels}`;
 }
 
-/**
- * Convert per-slot effectiveness ratings (key "<dow>-<HH>") into a coarse
- * morning/afternoon/evening histogram, normalized to sum to 1.
- */
-function effectivenessHistogram(
-  slotEffectiveness: Record<string, number>
-): { morning: number; afternoon: number; evening: number } {
-  let morning = 0;
-  let afternoon = 0;
-  let evening = 0;
-  for (const [key, val] of Object.entries(slotEffectiveness)) {
-    const hr = parseInt(key.split("-")[1] ?? "0", 10);
-    if (Number.isNaN(hr)) continue;
-    const w = Math.max(0, val);
-    if (hr < 12) morning += w;
-    else if (hr < 17) afternoon += w;
-    else evening += w;
-  }
-  const total = morning + afternoon + evening;
-  if (total === 0) return { morning: 0, afternoon: 0, evening: 0 };
-  return {
-    morning: Math.round((morning / total) * 100) / 100,
-    afternoon: Math.round((afternoon / total) * 100) / 100,
-    evening: Math.round((evening / total) * 100) / 100,
-  };
-}
-
 export function summarizeAvailability(args: {
   startDate: Date;
   weeks: number;
   timeWindows: TimeWindows;
   busy: BusyInterval[];
-  slotEffectiveness: Record<string, number>;
+  hourUtility: HourUtilityMap;
+  /** "Now" for decay-on-read against `hourUtility`. */
+  now: Date;
 }): AvailabilitySummary {
-  const { startDate, weeks, timeWindows, busy, slotEffectiveness } = args;
+  const { startDate, weeks, timeWindows, busy, hourUtility, now } = args;
   const sod = startOfDay(startDate);
 
   const perWeek: PerWeekAvailability[] = [];
@@ -127,6 +106,6 @@ export function summarizeAvailability(args: {
   return {
     typicalWeeklyMinutes: typical,
     perWeek,
-    preferredTimeOfDayHistogram: effectivenessHistogram(slotEffectiveness),
+    preferredTimeOfDayHistogram: preferredTimeOfDayHistogram(hourUtility, now),
   };
 }

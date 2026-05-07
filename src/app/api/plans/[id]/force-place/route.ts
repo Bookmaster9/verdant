@@ -9,6 +9,7 @@ import {
   parsePlacementRules,
 } from "@/lib/placement-rules";
 import { packIntoExistingSchedule } from "@/lib/scoring-pack";
+import { parseHourUtility } from "@/lib/hour-utility";
 import { loadCrossPlanBusy } from "@/lib/cross-plan-busy";
 import type { ScheduledSession, SproutPlan, PlanTask } from "@/types/plan";
 import { NextResponse } from "next/server";
@@ -76,9 +77,7 @@ export async function POST(request: Request, { params }: RouteParams) {
     loadCrossPlanBusy({ userId: s.user.id, excludePlanId: id }),
   ]);
   const tw = parseTimeWindowsJson(pref.timeWindows);
-  const slotEffectiveness = JSON.parse(
-    pref.slotEffectiveness || "{}"
-  ) as Record<string, number>;
+  const hourUtility = parseHourUtility(pref.hourUtility);
   const externalBusy = calRead.intervals;
   const blackoutBusy = blackoutsToBusy(parseBlackouts(plan.manualBlackouts));
   const persistentRules = parsePlacementRules(plan.placementRules);
@@ -104,7 +103,9 @@ export async function POST(request: Request, { params }: RouteParams) {
       ...forbidBusy,
     ],
     maxMinutesPerDay: Number.MAX_SAFE_INTEGER,
-    slotEffectiveness,
+    hourUtility,
+    now,
+    planId: id,
     extraDailyMinutesUsed: crossPlan.initialDailyMinutesUsed,
     placementRules: persistentRules,
     phaseCount: (sproutPlan.phases ?? []).length,

@@ -6,6 +6,7 @@ import { TimeWindowsHeatmap } from "./TimeWindowsHeatmap";
 import { Sprout } from "./art";
 import type { TimeWindows } from "@/types/plan";
 import { parseTimeWindowsJson } from "@/lib/default-preferences";
+import { parseHourUtility } from "@/lib/hour-utility";
 
 /**
  * One-time onboarding gate shown on `/plan/new` for first-time users.
@@ -27,6 +28,8 @@ interface Props {
   initialTimeWindowsJson: string;
   initialMaxMinutesDay: number;
   initialPushToCalendar: boolean;
+  /** Raw `UserPreference.hourUtility` JSON. Drives the learned-utility overlay. */
+  initialHourUtilityJson?: string | null;
   onDismiss: () => void;
 }
 
@@ -34,6 +37,7 @@ export function OnboardingModal({
   initialTimeWindowsJson,
   initialMaxMinutesDay,
   initialPushToCalendar,
+  initialHourUtilityJson,
   onDismiss,
 }: Props) {
   const router = useRouter();
@@ -219,7 +223,11 @@ export function OnboardingModal({
               {autoFillMsg}
             </div>
           )}
-          <TimeWindowsHeatmap value={tw} onChange={setTw} />
+          <TimeWindowsHeatmap
+            value={tw}
+            onChange={setTw}
+            hourUtility={parseHourUtility(initialHourUtilityJson ?? null)}
+          />
         </div>
 
         {/* Daily cap */}

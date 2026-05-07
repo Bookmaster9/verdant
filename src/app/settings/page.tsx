@@ -56,6 +56,7 @@ export default async function SettingsPage() {
             timeWindows={pref.timeWindows}
             defaultJson={JSON.stringify(DEFAULT_TIME_WINDOWS, null, 2)}
             userEmail={s.user.email}
+            hourUtility={pref.hourUtility}
           />
           <div style={{ marginTop: 22 }}>
             <PersistentRulesSection groups={ruleGroups} />

@@ -1,6 +1,12 @@
 import { auth } from "@/auth";
 import { prisma } from "@/lib/db";
 import { ensureVerdantCalendar, updateSessionInGoogle } from "@/lib/google-calendar";
+import {
+  applySignals,
+  parseHourUtility,
+  stringifyHourUtility,
+  SIGNAL_MAGNITUDE,
+} from "@/lib/hour-utility";
 import type { ScheduledSession } from "@/types/plan";
 import { z } from "zod";
 
@@ -111,6 +117,40 @@ export async function POST(request: Request, { params }: RouteParams) {
     where: { id },
     data: { scheduleJson: JSON.stringify(updated) },
   });
+
+  // Hour-utility signal: move emits a paired (origin, destination) signal.
+  // If the original start was already in the past, classify as "pushed back"
+  // (stronger negative); otherwise treat as a routine manual shift.
+  const moveNow = new Date();
+  const originalStart = new Date(target.start);
+  const wasPast = originalStart.getTime() < moveNow.getTime();
+  const originMag = wasPast
+    ? SIGNAL_MAGNITUDE.pushedBackOrigin
+    : SIGNAL_MAGNITUDE.manualShiftOrigin;
+  const destMag = wasPast
+    ? SIGNAL_MAGNITUDE.pushedBackDestination
+    : SIGNAL_MAGNITUDE.manualShiftDestination;
+  try {
+    const pref = await prisma.userPreference.findUnique({
+      where: { userId: s.user.id },
+      select: { hourUtility: true },
+    });
+    const cur = parseHourUtility(pref?.hourUtility ?? null);
+    const nextMap = applySignals(
+      cur,
+      [
+        { at: originalStart, magnitude: originMag },
+        { at: startDate, magnitude: destMag },
+      ],
+      moveNow
+    );
+    await prisma.userPreference.update({
+      where: { userId: s.user.id },
+      data: { hourUtility: stringifyHourUtility(nextMap) },
+    });
+  } catch {
+    // Signal write is best-effort — the move itself already succeeded.
+  }
 
   // Update Google Calendar after the response is sent.
   const accessToken = s.accessToken;

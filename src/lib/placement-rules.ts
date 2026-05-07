@@ -175,7 +175,7 @@ export function compileForbidRulesToBusy(
  * intentional: matching tasks are nudged toward target slots, but not so hard
  * that we'd starve them entirely if the target is busy.
  */
-export const PREFER_BONUS = 35;
+export const PREFER_BONUS = 15;
 export const PREFER_PENALTY = -10;
 
 export function preferRuleScore(

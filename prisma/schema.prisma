@@ -65,10 +65,13 @@ model UserPreference {
   /// optional: user's intended weekly study minutes target (design Q4, α). null = infer from windows.
   weeklyMinutesTarget Int?
   pushToCalendar Boolean @default(false)
-  /// slot effectiveness: { "Mon-19:30": 4.2, ... }
-  slotEffectiveness  String  @default("{}")
-  /// cancellation counts per day-of-week
-  slotCancellations  String  @default("{}")
+  /// Learned hour-of-week utility map. JSON shape:
+  ///   { "<dow>-<HH>": { "v": <signed accumulator>, "t": <ISO timestamp> } }
+  /// dow uses Date.getDay() (Sun=0..Sat=6), HH is 00-23. Cells decay
+  /// exponentially with a 30-day half-life (lazy on read), updated by
+  /// signals: completions, manual shifts, misses, push-backs. Empty / missing
+  /// keys decay to 0.
+  hourUtility        String  @default("{}")
   /// dashboard sprout sort mode: "deadline" | "created" | "custom"
   sproutSortMode     String  @default("deadline")
   /// custom drag-reorder of sprout tiles. JSON array of plan IDs in order.

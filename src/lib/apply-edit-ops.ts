@@ -29,6 +29,7 @@ import {
   applyPinRules,
   compileForbidRulesToBusy,
 } from "@/lib/placement-rules";
+import type { HourUtilityMap } from "@/lib/hour-utility";
 
 export interface ApplyContext {
   plan: SproutPlan;
@@ -39,8 +40,10 @@ export interface ApplyContext {
   timeWindows: TimeWindows;
   busy: BusyInterval[];
   maxMinutesPerDay: number;
-  slotEffectiveness: Record<string, number>;
+  hourUtility: HourUtilityMap;
   now: Date;
+  /** Stable plan id for RNG seeding inside the packer. */
+  planId: string;
   /**
    * Persistent placement rules already saved on the plan. Merged with any new
    * rules emitted by this edit before the packer runs. Persisting new rules
@@ -245,7 +248,9 @@ export function applyEditOps(
       timeWindows: ctx.timeWindows,
       busy: [...ctx.busy, ...lockedAsBusy, ...blackoutBusy, ...forbidBusy],
       maxMinutesPerDay: ctx.maxMinutesPerDay,
-      slotEffectiveness: ctx.slotEffectiveness,
+      hourUtility: ctx.hourUtility,
+      now: ctx.now,
+      planId: ctx.planId,
       placementRules: effectiveRules,
       phaseCount: plan.phases.length,
     });

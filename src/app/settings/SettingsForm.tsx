@@ -11,6 +11,7 @@ import {
 } from "@/components/verdant/art";
 import { TimeWindowsHeatmap } from "@/components/verdant/TimeWindowsHeatmap";
 import { parseTimeWindowsJson } from "@/lib/default-preferences";
+import { parseHourUtility } from "@/lib/hour-utility";
 import type { TimeWindows } from "@/types/plan";
 
 type Props = {
@@ -20,6 +21,7 @@ type Props = {
   timeWindows: string;
   defaultJson: string;
   userEmail?: string | null;
+  hourUtility?: string | null;
 };
 
 const NUDGE_KEYS = ["morningBrief", "preSession", "weeklyReview"] as const;
@@ -486,6 +488,7 @@ export function SettingsForm(p: Props) {
             setTw(next);
             void saveTwNow(next);
           }}
+          hourUtility={parseHourUtility(p.hourUtility ?? null)}
         />
       </div>
 

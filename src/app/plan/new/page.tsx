@@ -19,6 +19,7 @@ export default async function NewPlanPage() {
         initialTimeWindowsJson={pref.timeWindows}
         initialMaxMinutesDay={pref.maxMinutesDay}
         initialPushToCalendar={pref.pushToCalendar}
+        initialHourUtilityJson={pref.hourUtility}
       />
     </Shell>
   );

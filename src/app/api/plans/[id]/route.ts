@@ -17,6 +17,7 @@ import {
 } from "@/lib/placement-rules";
 import { loadProjectedReviewTasks } from "@/lib/load-projected-reviews";
 import { parseTimeWindowsJson } from "@/lib/default-preferences";
+import { parseHourUtility } from "@/lib/hour-utility";
 import { NextResponse } from "next/server";
 import { z } from "zod";
 
@@ -135,11 +136,15 @@ export async function PATCH(request: Request, { params }: RouteParams) {
     const sessions = JSON.parse(outSchedule || "[]") as ScheduledSession[];
     const sproutPlan = JSON.parse(plan.planJson || "{}") as SproutPlan;
     const now = new Date();
+    const userPref = await ensureUserPreferences(s.user.id);
     const llm = await interpretEdit({
       request: p.data.naturalLanguage,
       plan: sproutPlan,
       schedule: sessions,
       now,
+      userTimeZone: userPref.userTimeZone,
+      planStartDate: plan.startDate,
+      planDeadline: plan.deadline,
     });
     if (!llm.ok) {
       // No fallback. The HuggingFace path was deleted because it bypassed
@@ -155,10 +160,7 @@ export async function PATCH(request: Request, { params }: RouteParams) {
     }
     const pref = await ensureUserPreferences(s.user.id);
     const tw = parseTimeWindowsJson(pref.timeWindows);
-    const slotEff = JSON.parse(pref.slotEffectiveness || "{}") as Record<
-      string,
-      number
-    >;
+    const hourUtility = parseHourUtility(pref.hourUtility);
     const [calRead, crossPlan] = await Promise.all([
       getExternalBusy({
         userId: s.user.id,
@@ -184,8 +186,9 @@ export async function PATCH(request: Request, { params }: RouteParams) {
       timeWindows: tw,
       busy: [...externalBusy, ...crossPlan.busy],
       maxMinutesPerDay: pref.maxMinutesDay,
-      slotEffectiveness: slotEff,
+      hourUtility,
       now,
+      planId: id,
       persistentRules,
       projectedReviews,
     });
@@ -221,10 +224,7 @@ export async function PATCH(request: Request, { params }: RouteParams) {
   if (p.data.placementRules) {
     const pref = await ensureUserPreferences(s.user.id);
     const tw = parseTimeWindowsJson(pref.timeWindows);
-    const slotEff = JSON.parse(pref.slotEffectiveness || "{}") as Record<
-      string,
-      number
-    >;
+    const hourUtility = parseHourUtility(pref.hourUtility);
     const sessions = JSON.parse(outSchedule || "[]") as ScheduledSession[];
     const sproutPlan = JSON.parse(plan.planJson || "{}") as SproutPlan;
     const now = new Date();
@@ -279,7 +279,9 @@ export async function PATCH(request: Request, { params }: RouteParams) {
         ...forbidBusy,
       ],
       maxMinutesPerDay: pref.maxMinutesDay,
-      slotEffectiveness: slotEff,
+      hourUtility,
+      now,
+      planId: id,
       placementRules: newRules,
       phaseCount: (sproutPlan.phases ?? []).length,
     });
@@ -356,10 +358,7 @@ export async function PATCH(request: Request, { params }: RouteParams) {
   if (p.data.rebuildSchedule) {
     const pref = await ensureUserPreferences(s.user.id);
     const tw = parseTimeWindowsJson(pref.timeWindows);
-    const slotEff = JSON.parse(pref.slotEffectiveness || "{}") as Record<
-      string,
-      number
-    >;
+    const hourUtility = parseHourUtility(pref.hourUtility);
     const sproutPlan = JSON.parse(plan.planJson || "{}") as SproutPlan;
     const sessions = JSON.parse(outSchedule || "[]") as ScheduledSession[];
     const now = new Date();
@@ -414,7 +413,9 @@ export async function PATCH(request: Request, { params }: RouteParams) {
         ...forbidBusy,
       ],
       maxMinutesPerDay: pref.maxMinutesDay,
-      slotEffectiveness: slotEff,
+      hourUtility,
+      now,
+      planId: id,
       initialDailyMinutesUsed: crossPlan.initialDailyMinutesUsed,
       placementRules: persistentRules,
       phaseCount: (sproutPlan.phases ?? []).length,

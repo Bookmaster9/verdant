@@ -138,36 +138,69 @@ export async function interpretEdit(args: {
   plan: SproutPlan;
   schedule: ScheduledSession[];
   now: Date;
+  /** IANA timezone string from `UserPreference.userTimeZone`. Falls back to UTC. */
+  userTimeZone?: string | null;
+  /** Plan envelope (passed to the LLM so it doesn't pin past the deadline). */
+  planStartDate: Date;
+  planDeadline: Date;
 }): Promise<InterpretResult> {
   const key = process.env.OPENAI_API_KEY;
   if (!key) return { ok: false, reason: "no-api-key" };
+
+  const tz = args.userTimeZone || "UTC";
 
   const planView = {
     phases: args.plan.phases.map((p) => ({ name: p.name, focus: p.focus })),
     tasks: args.plan.tasks.map((t) => ({
       id: t.id,
       title: t.title,
-      type: t.type,
+      type: t.type as string,
+      minutes: t.minutes,
       weekIndex: t.weekIndex,
-      priority: t.priority,
+      priority: t.priority as string | undefined,
     })),
+    startDate: args.planStartDate.toISOString(),
+    deadline: args.planDeadline.toISOString(),
   };
+
   const scheduleView = args.schedule
     .filter((s) => new Date(s.start) >= args.now)
     .slice(0, 20)
-    .map((s) => ({
-      id: s.id,
-      planTaskId: s.planTaskId,
-      title: s.title,
-      start: s.start,
-      locked: !!s.locked,
-    }));
+    .map((s) => {
+      const startD = new Date(s.start);
+      const endD = new Date(s.end);
+      const minutes = Math.max(
+        0,
+        Math.round((endD.getTime() - startD.getTime()) / 60_000)
+      );
+      return {
+        id: s.id,
+        planTaskId: s.planTaskId,
+        title: s.title,
+        type: s.type as string,
+        day: dowShort(startD, tz),
+        date: ymdInTz(startD, tz),
+        startLocal: hmInTz(startD, tz),
+        endLocal: hmInTz(endD, tz),
+        minutes,
+        startIso: s.start,
+        locked: !!s.locked,
+        agenda: s.agenda?.map((a) => ({
+          planTaskId: a.planTaskId,
+          title: a.title,
+          type: a.type as string,
+          minutes: a.minutes,
+        })),
+      };
+    });
 
   const userContent = buildEditPlanUserPrompt({
     request: args.request,
     planView,
     scheduleView,
     todayIso: args.now.toISOString(),
+    userTimeZone: tz,
+    dateGlossary: buildDateGlossary(args.now, tz),
   });
 
   let rawText: string | undefined;
@@ -216,4 +249,128 @@ export async function interpretEdit(args: {
     }
     return { ok: false, reason: "interpret-failed" };
   }
+}
+
+// -----------------------------------------------------------------------------
+// Timezone-aware date helpers (used to build the LLM's date glossary).
+//
+// All formatting goes through `Intl.DateTimeFormat` so DST and tz-offset
+// arithmetic stay correct. Date math in the local-tz domain is done by
+// converting tz-local YMD strings → UTC midnight Dates → offsetting → back to
+// YMD strings; this is DST-safe because we never carry a wall-clock time
+// across the offset boundary.
+// -----------------------------------------------------------------------------
+
+const DOW_SHORT = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+const DOW_TOKEN = ["sun", "mon", "tue", "wed", "thu", "fri", "sat"];
+
+/** "YYYY-MM-DD" in the given timezone. */
+function ymdInTz(d: Date, tz: string): string {
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: tz,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(d);
+}
+
+/** "HH:mm" (24h) in the given timezone. */
+function hmInTz(d: Date, tz: string): string {
+  return new Intl.DateTimeFormat("en-GB", {
+    timeZone: tz,
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  }).format(d);
+}
+
+/** Short weekday name ("Mon") in the given timezone. */
+function dowShort(d: Date, tz: string): string {
+  // weekday: "short" returns "Mon", "Tue", ... in en-US.
+  return new Intl.DateTimeFormat("en-US", {
+    timeZone: tz,
+    weekday: "short",
+  }).format(d);
+}
+
+/** Mon=0..Sun=6 weekday index in the given timezone. */
+function dowMonZeroInTz(d: Date, tz: string): number {
+  const short = dowShort(d, tz);
+  const sunZero = DOW_SHORT.indexOf(short); // 0..6 with Sun=0
+  return (sunZero + 6) % 7;
+}
+
+/** Add `days` to a YMD string (DST-safe; pure date arithmetic). */
+function addDaysYmd(ymd: string, days: number): string {
+  const d = new Date(`${ymd}T00:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + days);
+  return d.toISOString().slice(0, 10);
+}
+
+/** Day-of-week (Mon=0..Sun=6) of a YMD string read as UTC midnight. */
+function dowMonZeroOfYmd(ymd: string): number {
+  const d = new Date(`${ymd}T00:00:00Z`);
+  // getUTCDay(): Sun=0..Sat=6. Convert to Mon=0..Sun=6.
+  return (d.getUTCDay() + 6) % 7;
+}
+
+interface DateGlossary {
+  today: { date: string; day: string };
+  tomorrow: { date: string; day: string };
+  yesterday: { date: string; day: string };
+  relative: Record<string, string>;
+  thisWeek: { from: string; to: string };
+  nextWeek: { from: string; to: string };
+}
+
+/**
+ * Pre-resolve every common relative-date reference (today, tomorrow, "this
+ * <Day>", "next <Day>") in the user's timezone. The LLM can then look up
+ * dates instead of computing them from `now` + a tz offset.
+ *
+ * Convention: "this <Day>" = the next occurrence within the current week
+ * (Mon-Sun); "next <Day>" = one full week after that. If <Day> equals today,
+ * "this <Day>" is today and "next <Day>" is +7.
+ */
+function buildDateGlossary(now: Date, tz: string): DateGlossary {
+  const todayYmd = ymdInTz(now, tz);
+  const todayDow = dowMonZeroInTz(now, tz);
+  const todayShort = dowShort(now, tz);
+
+  const tomorrowYmd = addDaysYmd(todayYmd, 1);
+  const yesterdayYmd = addDaysYmd(todayYmd, -1);
+
+  // Monday of the current week.
+  const thisWeekStart = addDaysYmd(todayYmd, -todayDow);
+  const thisWeekEnd = addDaysYmd(thisWeekStart, 6);
+  const nextWeekStart = addDaysYmd(thisWeekStart, 7);
+  const nextWeekEnd = addDaysYmd(nextWeekStart, 6);
+
+  const relative: Record<string, string> = {};
+  for (let i = 0; i < 7; i++) {
+    const dayName = DOW_TOKEN[(i + 1) % 7]; // Mon..Sun in lowercase
+    // "this <Day>" = the occurrence within [thisWeekStart, thisWeekEnd].
+    const thisOffset = i - todayDow;
+    relative[`this ${dayName}`] = addDaysYmd(
+      todayYmd,
+      thisOffset >= 0 ? thisOffset : thisOffset + 7
+    );
+    // "next <Day>" = always +7 from the "this <Day>" anchor.
+    relative[`next ${dayName}`] = addDaysYmd(relative[`this ${dayName}`], 7);
+  }
+
+  return {
+    today: { date: todayYmd, day: todayShort },
+    tomorrow: {
+      date: tomorrowYmd,
+      day: DOW_SHORT[(dowMonZeroOfYmd(tomorrowYmd) + 1) % 7],
+    },
+    yesterday: {
+      date: yesterdayYmd,
+      day: DOW_SHORT[(dowMonZeroOfYmd(yesterdayYmd) + 1) % 7],
+    },
+    relative,
+    thisWeek: { from: thisWeekStart, to: thisWeekEnd },
+    nextWeek: { from: nextWeekStart, to: nextWeekEnd },
+  };
 }

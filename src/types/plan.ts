@@ -180,4 +180,12 @@ export interface ScheduledSession {
    * inside Google Calendar (drift adoption).
    */
   locked?: boolean;
+  /**
+   * ISO timestamp set when the lazy missed-detection pass has already credited
+   * a "missed" signal to the hour-utility map for this session. Prevents
+   * double-counting on repeat dashboard reads. Only set on past sessions that
+   * never got a completion. Cleared if the session is later moved (move-session
+   * already produces a fresh placement, so the old session is gone).
+   */
+  missedSignalAppliedAt?: string;
 }

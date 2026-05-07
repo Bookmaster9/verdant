@@ -11,6 +11,7 @@ import { seedFsrsForPlan } from "@/lib/fsrs";
 import { reviewInstanceToTask } from "@/lib/fsrs-to-tasks";
 import type { PlanTask, ScheduledSession, SproutPlan } from "@/types/plan";
 import { parseTimeWindowsJson } from "@/lib/default-preferences";
+import { parseHourUtility } from "@/lib/hour-utility";
 import {
   applyYoutubeVideoLengthsToLessonMinutes,
   enrichSproutWithYoutubePlaylist,
@@ -124,9 +125,8 @@ export async function POST(request: Request) {
 
         const timeWindows = parseTimeWindowsJson(pref.timeWindows);
         const maxM = pref.maxMinutesDay;
-        const slotEffectiveness = JSON.parse(
-          pref.slotEffectiveness || "{}"
-        ) as Record<string, number>;
+        const hourUtility = parseHourUtility(pref.hourUtility);
+        const now = new Date();
         const externalBusy = busyResult.intervals;
 
         const days = Math.max(
@@ -139,7 +139,8 @@ export async function POST(request: Request) {
           weeks,
           timeWindows,
           busy: [...externalBusy, ...crossPlan.busy],
-          slotEffectiveness,
+          hourUtility,
+          now,
         });
 
         // Step 2: LLM — usually the longest step.
@@ -182,18 +183,23 @@ export async function POST(request: Request) {
           label: "weaving sessions into your calendar",
         });
         const recs = supplementalResources(targetSkill);
-        const ctx = {
+        // Pass 1 runs before the plan row exists, so we use a temporary planId
+        // for RNG seeding. Pass 1's placement is internal (only used to read
+        // lesson end times); only pass 2 produces the persisted schedule.
+        const pass1Ctx = {
           startDate,
           deadline,
           timeWindows,
           busy: [...externalBusy, ...crossPlan.busy],
           maxMinutesPerDay: maxM,
-          slotEffectiveness,
+          hourUtility,
+          now,
+          planId: `pre-pack-${userId}`,
           initialDailyMinutesUsed: crossPlan.initialDailyMinutesUsed,
         };
         const tPack = Date.now();
         // Pass 1: lessons + milestones only.
-        const pass1 = packWithScoring(sprout.tasks, ctx);
+        const pass1 = packWithScoring(sprout.tasks, pass1Ctx);
         tick("packWithScoring(pass1)", tPack);
 
         // Build a lessonId → end-of-session map from pass 1.
@@ -315,7 +321,10 @@ export async function POST(request: Request) {
           })
         );
         const allTasks: PlanTask[] = [...sprout.tasks, ...reviewTasks];
-        const pass2 = packWithScoring(allTasks, ctx);
+        const pass2 = packWithScoring(allTasks, {
+          ...pass1Ctx,
+          planId: plan.id,
+        });
         tick("packWithScoring(pass2)", tPack);
         const schedule: ScheduledSession[] = pass2.schedule;
 

@@ -12,6 +12,7 @@ import {
   parsePlacementRules,
 } from "@/lib/placement-rules";
 import { firstSlotFrom } from "@/lib/time-windows";
+import { parseHourUtility } from "@/lib/hour-utility";
 import type { ScheduledSession, SproutPlan } from "@/types/plan";
 import { ensureVerdantCalendar, updateSessionInGoogle } from "@/lib/google-calendar";
 import { z } from "zod";
@@ -50,10 +51,7 @@ async function repackAfterRemovingSession(
 ): Promise<{ scheduleJson: string; summary: string }> {
   const pref = await ensureUserPreferences(userId);
   const tw = parseTimeWindowsJson(pref.timeWindows);
-  const slotEff = JSON.parse(pref.slotEffectiveness || "{}") as Record<
-    string,
-    number
-  >;
+  const hourUtility = parseHourUtility(pref.hourUtility);
   const sproutPlan = JSON.parse(plan.planJson || "{}") as SproutPlan;
   const now = new Date();
   const lockedFuture = sessionsSansRemoved.filter(
@@ -110,7 +108,9 @@ async function repackAfterRemovingSession(
       ...forbidBusy,
     ],
     maxMinutesPerDay: pref.maxMinutesDay,
-    slotEffectiveness: slotEff,
+    hourUtility,
+    now,
+    planId,
     initialDailyMinutesUsed: crossPlan.initialDailyMinutesUsed,
     placementRules: persistentRules,
     phaseCount: (sproutPlan.phases ?? []).length,

@@ -4,19 +4,22 @@ import {
   useCallback,
   useEffect,
   useLayoutEffect,
+  useMemo,
   useRef,
   useState,
 } from "react";
 import type { TimeWindow, TimeWindows } from "@/types/plan";
+import type { HourUtilityMap } from "@/lib/hour-utility";
 
-const FIRST_HOUR = 7;
-const LAST_HOUR = 21; // exclusive — show 7a..8p (14 cells)
+const FIRST_HOUR = 0;
+const LAST_HOUR = 24; // exclusive — show 12a..11p (24 cells)
 const HOURS = Array.from({ length: LAST_HOUR - FIRST_HOUR }).map(
   (_, i) => FIRST_HOUR + i
 );
 const DRAG_THRESHOLD_PX = 4;
 
 const DAY_LABELS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+/** TimeWindows keys are Date.getDay()-aligned: Sun=0..Sat=6. */
 const DAY_LABEL_TO_KEY: Record<string, string> = {
   Mon: "1",
   Tue: "2",
@@ -27,9 +30,22 @@ const DAY_LABEL_TO_KEY: Record<string, string> = {
   Sun: "0",
 };
 
+/** Half-life used by hour-utility decay; mirrored here so the overlay can
+ * show *current* values without a network round-trip. */
+const HALF_LIFE_DAYS = 30;
+const DECAY_PER_MS = Math.LN2 / (HALF_LIFE_DAYS * 86_400_000);
+
 interface Props {
   value: TimeWindows;
   onChange: (next: TimeWindows) => void;
+  /**
+   * Optional learned hour-utility map. When present, an "show learned utility"
+   * dropdown is rendered below the editor. The dropdown's grid uses the
+   * SAME 7×24 layout but is NOT masked by `value` — every cell shows its
+   * decayed value on a red→neutral→green gradient regardless of whether the
+   * cell is currently selected.
+   */
+  hourUtility?: HourUtilityMap;
 }
 
 interface Cell {
@@ -54,10 +70,6 @@ function cellKey(dayIdx: number, absoluteHour: number): string {
   return `${dayIdx}-${absoluteHour}`;
 }
 
-/** Convert TimeWindows to a Set<"dayIdx-absHour"> covering selected hours.
- *
- * Defensive: tolerates a legacy single-window value (`{start, end}`) on a day
- * key in case a stale prop bypasses the page-level normalizer. */
 function timeWindowsToSelected(tw: TimeWindows): Set<string> {
   const out = new Set<string>();
   for (let dayIdx = 0; dayIdx < 7; dayIdx++) {
@@ -75,8 +87,6 @@ function timeWindowsToSelected(tw: TimeWindows): Set<string> {
       const [sh, sm] = w.start.split(":").map(Number);
       const [eh, em] = w.end.split(":").map(Number);
       if (!Number.isFinite(sh) || !Number.isFinite(eh)) continue;
-      // Each cell H represents the interval [H:00, H+1:00). Round-trip safely
-      // by including the start hour and excluding the end hour.
       const startHour = sh + (sm > 0 ? 1 : 0);
       const endHour = em > 0 ? eh + 1 : eh;
       for (let h = startHour; h < endHour; h++) {
@@ -87,10 +97,6 @@ function timeWindowsToSelected(tw: TimeWindows): Set<string> {
   return out;
 }
 
-/**
- * Coalesce per-hour selections back into the smallest set of {start, end}
- * ranges per day. Empty days are omitted from the output.
- */
 function selectedToTimeWindows(sel: Set<string>): TimeWindows {
   const out: TimeWindows = {};
   for (let dayIdx = 0; dayIdx < 7; dayIdx++) {
@@ -109,7 +115,7 @@ function selectedToTimeWindows(sel: Set<string>): TimeWindows {
       } else {
         ranges.push({
           start: `${pad2(runStart)}:00`,
-          end: `${pad2(runEnd)}:00`,
+          end: runEnd === 24 ? "24:00" : `${pad2(runEnd)}:00`,
         });
         runStart = hours[i];
         runEnd = hours[i] + 1;
@@ -117,7 +123,7 @@ function selectedToTimeWindows(sel: Set<string>): TimeWindows {
     }
     ranges.push({
       start: `${pad2(runStart)}:00`,
-      end: `${pad2(runEnd)}:00`,
+      end: runEnd === 24 ? "24:00" : `${pad2(runEnd)}:00`,
     });
     out[DAY_LABEL_TO_KEY[DAY_LABELS[dayIdx]]] = ranges;
   }
@@ -140,9 +146,48 @@ function applyRectToSnapshot(d: DragState): Set<string> {
   return next;
 }
 
-export function TimeWindowsHeatmap({ value, onChange }: Props) {
-  // Internal source-of-truth: a Set of selected "dayIdx-absHour" cells.
-  // Initialized from props; resynced when the parent commits a new value.
+// -----------------------------------------------------------------------------
+// Utility-overlay helpers
+// -----------------------------------------------------------------------------
+
+/**
+ * Decay a stored cell to `now`. Mirrors `decayedValue` in `hour-utility.ts`
+ * — duplicated here so the client renders without a server round trip.
+ */
+function decayCell(v: number, t: string, now: Date): number {
+  const fromMs = new Date(t).getTime();
+  if (Number.isNaN(fromMs)) return 0;
+  const age = Math.max(0, now.getTime() - fromMs);
+  return v * Math.exp(-DECAY_PER_MS * age);
+}
+
+/**
+ * Map a signed utility value to a CSS color on the red → neutral → green
+ * gradient. Saturates at ±10 (typical equilibrium). Neutral cells are pale
+ * cream so the heatmap reads as "no signal yet" rather than "off".
+ */
+function utilityColor(v: number): string {
+  const SATURATION_AT = 10;
+  const t = Math.max(-1, Math.min(1, v / SATURATION_AT));
+  const hue = 60 + t * 60; // -1 → 0 (red), 0 → 60 (yellow), +1 → 120 (green)
+  const mag = Math.abs(t);
+  const sat = 25 + mag * 60;
+  const light = 92 - mag * 35;
+  return `hsl(${hue} ${sat}% ${light}%)`;
+}
+
+/** Day-of-week mapping for utility map keys (Date.getDay() / Sun=0..Sat=6). */
+const DAY_INDEX_FOR_LABEL: Record<string, number> = {
+  Mon: 1,
+  Tue: 2,
+  Wed: 3,
+  Thu: 4,
+  Fri: 5,
+  Sat: 6,
+  Sun: 0,
+};
+
+export function TimeWindowsHeatmap({ value, onChange, hourUtility }: Props) {
   const [selected, setSelected] = useState<Set<string>>(() =>
     timeWindowsToSelected(value)
   );
@@ -154,27 +199,22 @@ export function TimeWindowsHeatmap({ value, onChange }: Props) {
     }
   }, [value]);
 
-  // Track latest selected state in a ref so the window pointerup handler
-  // can commit without stale closure.
   const selectedRef = useRef(selected);
   useEffect(() => {
     selectedRef.current = selected;
   }, [selected]);
 
-  // Drag state.
   const [drag, setDrag] = useState<DragState | null>(null);
   const dragRef = useRef<DragState | null>(null);
   useEffect(() => {
     dragRef.current = drag;
   }, [drag]);
 
-  // Cell refs (for outline geometry).
   const containerRef = useRef<HTMLDivElement | null>(null);
   const cellRefs = useRef<(HTMLButtonElement | null)[][]>(
     Array.from({ length: 7 }, () => Array(HOURS.length).fill(null))
   );
 
-  // Outline rect (in container-local coordinates).
   const [outlineRect, setOutlineRect] = useState<{
     top: number;
     left: number;
@@ -250,8 +290,6 @@ export function TimeWindowsHeatmap({ value, onChange }: Props) {
     setSelected(applyRectToSnapshot(next));
   }
 
-  // Window-level pointermove (threshold), pointerup (commit), keydown (Esc).
-  // Re-attached when drag toggles between null/non-null.
   useEffect(() => {
     if (!drag) return;
 
@@ -273,7 +311,6 @@ export function TimeWindowsHeatmap({ value, onChange }: Props) {
       if (cur.active) {
         commitOnChange(selectedRef.current);
       } else {
-        // Treat as a click — toggle the origin cell.
         const originAbsHour = HOURS[cur.origin.hourIdx];
         const originKey = cellKey(cur.origin.dayIdx, originAbsHour);
         const next = new Set(cur.snapshot);
@@ -290,7 +327,6 @@ export function TimeWindowsHeatmap({ value, onChange }: Props) {
       if (e.key !== "Escape") return;
       const cur = dragRef.current;
       if (!cur) return;
-      // Cancel: revert to snapshot, do not commit.
       setSelected(cur.snapshot);
       setDrag(null);
       dragRef.current = null;
@@ -304,8 +340,6 @@ export function TimeWindowsHeatmap({ value, onChange }: Props) {
       window.removeEventListener("pointerup", onUp);
       window.removeEventListener("keydown", onKey);
     };
-    // Re-attach only when drag toggles null/non-null. The handlers read latest
-    // state via refs so we don't need them in deps.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [drag === null]);
 
@@ -315,8 +349,8 @@ export function TimeWindowsHeatmap({ value, onChange }: Props) {
         ref={containerRef}
         style={{
           display: "grid",
-          gridTemplateColumns: "60px repeat(14, 1fr)",
-          gap: 4,
+          gridTemplateColumns: "48px repeat(24, 1fr)",
+          gap: 2,
           alignItems: "center",
           position: "relative",
           touchAction: "none",
@@ -329,13 +363,12 @@ export function TimeWindowsHeatmap({ value, onChange }: Props) {
             key={h}
             style={{
               fontFamily: "var(--font-jetbrains)",
-              fontSize: 10,
+              fontSize: 9,
               color: "var(--ink-faded)",
               textAlign: "center",
             }}
           >
-            {h <= 12 ? h : h - 12}
-            {h < 12 ? "a" : "p"}
+            {hourGlyph(h)}
           </div>
         ))}
         {DAY_LABELS.map((day, dayIdx) => (
@@ -350,7 +383,6 @@ export function TimeWindowsHeatmap({ value, onChange }: Props) {
           />
         ))}
 
-        {/* drag-rectangle outline overlay */}
         {drag?.active && outlineRect && (
           <div
             aria-hidden
@@ -381,8 +413,17 @@ export function TimeWindowsHeatmap({ value, onChange }: Props) {
         click any cell to toggle, or drag across a region to fill or clear it.
         fern only plants in the green hours. press esc mid-drag to cancel.
       </div>
+
+      {hourUtility && <UtilityOverlay hourUtility={hourUtility} />}
     </div>
   );
+}
+
+function hourGlyph(h: number): string {
+  if (h === 0) return "12a";
+  if (h === 12) return "12p";
+  if (h < 12) return `${h}a`;
+  return `${h - 12}p`;
 }
 
 function DayRow({
@@ -409,7 +450,7 @@ function DayRow({
       <div
         style={{
           fontFamily: "var(--font-fraunces)",
-          fontSize: 14,
+          fontSize: 13,
           fontWeight: 600,
         }}
       >
@@ -431,7 +472,7 @@ function DayRow({
             onPointerEnter={() => onCellPointerEnter(dayIdx, hourIdx)}
             style={{
               height: 22,
-              borderRadius: 4,
+              borderRadius: 3,
               background: on ? "var(--fern)" : "var(--paper-deep)",
               border: "1px solid var(--ink-soft)",
               cursor: "pointer",
@@ -439,6 +480,199 @@ function DayRow({
               padding: 0,
               touchAction: "none",
               transition: "background .08s, opacity .08s",
+            }}
+          />
+        );
+      })}
+    </>
+  );
+}
+
+// -----------------------------------------------------------------------------
+// Utility overlay (dropdown)
+// -----------------------------------------------------------------------------
+
+function UtilityOverlay({ hourUtility }: { hourUtility: HourUtilityMap }) {
+  const [open, setOpen] = useState(false);
+  // Decay-on-read at component-mount time. The user opens settings rarely
+  // enough that re-decaying once per render is fine.
+  const decayed = useMemo(() => {
+    const now = new Date();
+    const map = new Map<string, number>();
+    for (const [key, cell] of Object.entries(hourUtility)) {
+      if (!cell) continue;
+      map.set(key, decayCell(cell.v, cell.t, now));
+    }
+    return map;
+  }, [hourUtility]);
+
+  const summary = useMemo(() => {
+    let entries = 0;
+    let pos = 0;
+    let neg = 0;
+    let bestKey: string | null = null;
+    let bestVal = -Infinity;
+    let worstKey: string | null = null;
+    let worstVal = Infinity;
+    for (const [key, v] of decayed) {
+      entries++;
+      if (v > 0) pos++;
+      if (v < 0) neg++;
+      if (v > bestVal) {
+        bestVal = v;
+        bestKey = key;
+      }
+      if (v < worstVal) {
+        worstVal = v;
+        worstKey = key;
+      }
+    }
+    return { entries, pos, neg, bestKey, bestVal, worstKey, worstVal };
+  }, [decayed]);
+
+  return (
+    <details
+      open={open}
+      onToggle={(e) => setOpen((e.target as HTMLDetailsElement).open)}
+      style={{
+        marginTop: 14,
+        background: "var(--paper-deep)",
+        border: "1px solid var(--ink-soft)",
+        borderRadius: 8,
+        padding: "8px 12px",
+      }}
+    >
+      <summary
+        style={{
+          cursor: "pointer",
+          fontFamily: "var(--font-fraunces)",
+          fontSize: 13,
+          color: "var(--ink-soft)",
+          listStyle: "none",
+        }}
+      >
+        <span
+          aria-hidden
+          style={{ display: "inline-block", width: 10, marginRight: 4 }}
+        >
+          {open ? "▾" : "▸"}
+        </span>
+        learned utility — {summary.entries === 0
+          ? "no signals yet"
+          : `${summary.pos} bright, ${summary.neg} dim`}
+      </summary>
+      {open && (
+        <div style={{ marginTop: 10 }}>
+          <div
+            style={{
+              display: "grid",
+              gridTemplateColumns: "48px repeat(24, 1fr)",
+              gap: 2,
+              alignItems: "center",
+            }}
+          >
+            <div />
+            {HOURS.map((h) => (
+              <div
+                key={h}
+                style={{
+                  fontFamily: "var(--font-jetbrains)",
+                  fontSize: 9,
+                  color: "var(--ink-faded)",
+                  textAlign: "center",
+                }}
+              >
+                {hourGlyph(h)}
+              </div>
+            ))}
+            {DAY_LABELS.map((day, dayIdx) => {
+              const dow = DAY_INDEX_FOR_LABEL[day];
+              return (
+                <UtilityRow
+                  key={day}
+                  day={day}
+                  dow={dow}
+                  decayed={decayed}
+                />
+              );
+            })}
+          </div>
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "space-between",
+              gap: 12,
+              marginTop: 10,
+              fontFamily: "var(--font-fraunces)",
+              fontStyle: "italic",
+              fontSize: 12,
+              color: "var(--ink-faded)",
+              flexWrap: "wrap",
+            }}
+          >
+            <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+              <span>worse</span>
+              <span
+                aria-hidden
+                style={{
+                  display: "inline-block",
+                  width: 80,
+                  height: 10,
+                  borderRadius: 3,
+                  background:
+                    "linear-gradient(to right, hsl(0 85% 55%), hsl(60 30% 90%), hsl(120 85% 50%))",
+                  border: "1px solid var(--ink-soft)",
+                }}
+              />
+              <span>better</span>
+            </div>
+            <div>
+              {summary.bestKey ? (
+                <>
+                  fern&apos;s favorite hour: <code>{summary.bestKey}</code> ({summary.bestVal.toFixed(1)})
+                </>
+              ) : null}
+            </div>
+          </div>
+        </div>
+      )}
+    </details>
+  );
+}
+
+function UtilityRow({
+  day,
+  dow,
+  decayed,
+}: {
+  day: string;
+  dow: number;
+  decayed: Map<string, number>;
+}) {
+  return (
+    <>
+      <div
+        style={{
+          fontFamily: "var(--font-fraunces)",
+          fontSize: 13,
+          fontWeight: 600,
+        }}
+      >
+        {day}
+      </div>
+      {HOURS.map((absHour) => {
+        const v = decayed.get(`${dow}-${pad2(absHour)}`) ?? 0;
+        const bg = v === 0 ? "hsl(60 20% 95%)" : utilityColor(v);
+        return (
+          <div
+            key={absHour}
+            title={`${day} ${absHour}:00 — ${v.toFixed(2)}`}
+            style={{
+              height: 18,
+              borderRadius: 3,
+              background: bg,
+              border: "1px solid var(--ink-soft)",
             }}
           />
         );
