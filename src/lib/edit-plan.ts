@@ -264,7 +264,14 @@ export async function interpretEdit(args: {
 
   const planView = {
     phases: args.plan.phases.map((p) => ({ name: p.name, focus: p.focus })),
-    tasks: planTasksWithRefs.map(({ id: _id, ...rest }) => rest),
+    tasks: planTasksWithRefs.map((t) => ({
+      ref: t.ref,
+      title: t.title,
+      type: t.type,
+      minutes: t.minutes,
+      weekIndex: t.weekIndex,
+      priority: t.priority,
+    })),
     startDate: args.planStartDate.toISOString(),
     deadline: args.planDeadline.toISOString(),
   };
