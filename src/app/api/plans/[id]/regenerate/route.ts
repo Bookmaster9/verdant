@@ -14,6 +14,7 @@ import { loadProjectedReviewTasks } from "@/lib/load-projected-reviews";
 import type { ScheduledSession, SproutPlan } from "@/types/plan";
 import { parseTimeWindowsJson } from "@/lib/default-preferences";
 import { parseHourUtility } from "@/lib/hour-utility";
+import { revalidatePath } from "next/cache";
 import {
   applyYoutubeVideoLengthsToLessonMinutes,
   enrichSproutWithYoutubePlaylist,
@@ -149,8 +150,16 @@ export async function POST(request: Request, { params }: RouteParams) {
     sproutPlan: sproutOut,
     planStartDate: plan.startDate,
   });
+  // Skip tasks the user has already committed — see route.ts for full rationale.
+  const completedRows = await prisma.taskCompletion.findMany({
+    where: { planId: id, completed: true },
+    select: { taskId: true },
+  });
+  const completedTaskIds = new Set(completedRows.map((c) => c.taskId));
   const tasksToPack = [
-    ...sproutOut.tasks.filter((t) => !placedTaskIds.has(t.id)),
+    ...sproutOut.tasks.filter(
+      (t) => !placedTaskIds.has(t.id) && !completedTaskIds.has(t.id)
+    ),
     ...projectedReviews.filter((t) => !placedTaskIds.has(t.id)),
   ];
 
@@ -189,6 +198,11 @@ export async function POST(request: Request, { params }: RouteParams) {
       scheduleJson: JSON.stringify(newSchedule),
     },
   });
+
+  revalidatePath(`/plan/${id}`);
+  revalidatePath(`/plan/${id}/session/[taskId]`, "page");
+  revalidatePath("/schedule");
+  revalidatePath("/");
 
   return NextResponse.json({
     plan: updated,

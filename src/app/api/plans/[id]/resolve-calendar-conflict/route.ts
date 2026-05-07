@@ -68,8 +68,15 @@ async function repackAfterRemovingSession(
     sproutPlan,
     planStartDate: plan.startDate,
   });
+  const completedRows = await prisma.taskCompletion.findMany({
+    where: { planId, completed: true },
+    select: { taskId: true },
+  });
+  const completedTaskIds = new Set(completedRows.map((c) => c.taskId));
   const tasksToPack = [
-    ...(sproutPlan.tasks ?? []).filter((t) => !placedTaskIds.has(t.id)),
+    ...(sproutPlan.tasks ?? []).filter(
+      (t) => !placedTaskIds.has(t.id) && !completedTaskIds.has(t.id)
+    ),
     ...projectedReviews.filter((t) => !placedTaskIds.has(t.id)),
   ];
 

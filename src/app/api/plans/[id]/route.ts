@@ -18,6 +18,7 @@ import {
 import { loadProjectedReviewTasks } from "@/lib/load-projected-reviews";
 import { parseTimeWindowsJson } from "@/lib/default-preferences";
 import { parseHourUtility } from "@/lib/hour-utility";
+import { revalidatePath } from "next/cache";
 import { NextResponse } from "next/server";
 import { z } from "zod";
 
@@ -133,6 +134,17 @@ export async function PATCH(request: Request, { params }: RouteParams) {
   let outManualBlackoutsFromAI: string | null = null;
   let outPlanJsonFromAI: string | null = null;
   let outPlacementRulesFromAI: string | null = null;
+
+  // Tasks the user has already committed should NEVER be re-packed by an
+  // edit / rebuild / rebalance. Without this, a future-completed task (whose
+  // schedule entry was removed at commit time) gets pulled back into
+  // tasksToPack and a phantom future entry gets created — visible as the
+  // "journal entries disappear after rebuild" symptom on the sprout page.
+  const completedRows = await prisma.taskCompletion.findMany({
+    where: { planId: id, completed: true },
+    select: { taskId: true },
+  });
+  const completedTaskIds = new Set(completedRows.map((c) => c.taskId));
   if (p.data.naturalLanguage) {
     const sessions = JSON.parse(outSchedule || "[]") as ScheduledSession[];
     const sproutPlan = JSON.parse(plan.planJson || "{}") as SproutPlan;
@@ -192,6 +204,7 @@ export async function PATCH(request: Request, { params }: RouteParams) {
       planId: id,
       persistentRules,
       projectedReviews,
+      completedTaskIds,
     });
     outSchedule = JSON.stringify(result.schedule);
     outPlanJsonFromAI = JSON.stringify(result.plan);
@@ -257,7 +270,9 @@ export async function PATCH(request: Request, { params }: RouteParams) {
       planStartDate: plan.startDate,
     });
     const tasksToPack = [
-      ...(sproutPlan.tasks ?? []).filter((t) => !placedTaskIds.has(t.id)),
+      ...(sproutPlan.tasks ?? []).filter(
+        (t) => !placedTaskIds.has(t.id) && !completedTaskIds.has(t.id)
+      ),
       ...projectedReviews.filter((t) => !placedTaskIds.has(t.id)),
     ];
     const lockedAsBusy = lockedFuture.map((sess) => ({
@@ -378,7 +393,9 @@ export async function PATCH(request: Request, { params }: RouteParams) {
       planStartDate: plan.startDate,
     });
     const tasksToPack = [
-      ...(sproutPlan.tasks ?? []).filter((t) => !placedTaskIds.has(t.id)),
+      ...(sproutPlan.tasks ?? []).filter(
+        (t) => !placedTaskIds.has(t.id) && !completedTaskIds.has(t.id)
+      ),
       ...projectedReviews.filter((t) => !placedTaskIds.has(t.id)),
     ];
 
@@ -480,6 +497,16 @@ export async function PATCH(request: Request, { params }: RouteParams) {
     where: { id },
     data,
   });
+
+  // Drop the App-Router client cache for every surface that reads scheduleJson
+  // / planJson / placementRules. Without this, the user can apply a Fern
+  // reschedule and see the new time on /schedule but a stale time on the
+  // sprout page (or vice versa) for ~30s.
+  revalidatePath(`/plan/${id}`);
+  revalidatePath(`/plan/${id}/session/[taskId]`, "page");
+  revalidatePath("/schedule");
+  revalidatePath("/");
+
   return NextResponse.json({
     plan: updated,
     summary: editSummary,

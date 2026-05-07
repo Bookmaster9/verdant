@@ -56,6 +56,14 @@ export interface ApplyContext {
    * every unlocked future review. Pass them so reviews ride along.
    */
   projectedReviews?: PlanTask[];
+  /**
+   * Plan-task ids the user has already committed (from `TaskCompletion` rows
+   * with `completed: true`). The repack pass excludes them — without this,
+   * a future task whose schedule entry was removed at commit time gets pulled
+   * back in and re-packed, creating a phantom future entry for an
+   * already-completed lesson.
+   */
+  completedTaskIds?: Set<string>;
 }
 
 type AuditEntry = {
@@ -225,8 +233,11 @@ export function applyEditOps(
     // Repack covers BOTH plan tasks (lessons + milestones from planJson) and
     // FSRS-projected reviews. Reviews aren't in plan.tasks; if we leave them
     // out, every repack drops every unlocked future review.
+    const completedIds = ctx.completedTaskIds ?? new Set<string>();
     const tasksToRepack = [
-      ...plan.tasks.filter((t) => !placedTaskIds.has(t.id)),
+      ...plan.tasks.filter(
+        (t) => !placedTaskIds.has(t.id) && !completedIds.has(t.id)
+      ),
       ...(ctx.projectedReviews ?? []).filter((t) => !placedTaskIds.has(t.id)),
     ];
 
