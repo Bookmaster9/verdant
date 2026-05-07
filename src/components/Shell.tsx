@@ -4,6 +4,7 @@ import { PrimaryNav } from "./verdant/PrimaryNav";
 import { PlantHelper } from "./verdant/PlantHelper";
 import { FooterStrip } from "./verdant/FooterStrip";
 import { LegalLinks } from "./verdant/LegalLinks";
+import { TimezoneCapture } from "./verdant/TimezoneCapture";
 
 export async function Shell({
   children,
@@ -19,12 +20,16 @@ export async function Shell({
     ? { name: session.user.name, email: session.user.email, image: session.user.image }
     : null;
   const signedIn = Boolean(session);
-  const pushToCalendar = signedIn && session?.user?.id
-    ? (await ensureUserPreferences(session.user.id)).pushToCalendar
-    : false;
+  const pref =
+    signedIn && session?.user?.id
+      ? await ensureUserPreferences(session.user.id)
+      : null;
+  const pushToCalendar = pref?.pushToCalendar ?? false;
+  const persistedTz = pref?.userTimeZone ?? null;
   return (
     <div className="app-frame">
       <PrimaryNav signedIn={signedIn} user={user} pushToCalendar={pushToCalendar} />
+      {signedIn && <TimezoneCapture persistedTz={persistedTz} />}
       <main>{children}</main>
       {signedIn && showFooter && <FooterStrip />}
       <LegalLinks />

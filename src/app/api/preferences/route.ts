@@ -26,6 +26,14 @@ const patch = z.object({
   /** Onboarding completion stamp. The modal sends `true` to record "now"; we
    *  never accept a client-supplied date. Once set, never re-prompts. */
   onboardedNow: z.boolean().optional(),
+  /** IANA tz from the browser (e.g. "America/New_York"). Posted on shell
+   *  mount whenever it differs from the persisted value. */
+  userTimeZone: z
+    .string()
+    .min(1)
+    .max(64)
+    .regex(/^[A-Za-z0-9_+\-/]+$/)
+    .optional(),
 });
 
 export async function GET() {
@@ -68,6 +76,9 @@ export async function PATCH(request: Request) {
   }
   if (p.data.onboardedNow === true) {
     data.onboardedAt = new Date().toISOString();
+  }
+  if (p.data.userTimeZone !== undefined) {
+    data.userTimeZone = p.data.userTimeZone;
   }
   const pref = await prisma.userPreference.upsert({
     where: { userId: s.user.id },

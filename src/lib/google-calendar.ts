@@ -6,15 +6,28 @@
  * calendar id is stored per-user on `UserPreference.verdantCalendarId` and
  * provisioned lazily via `ensureVerdantCalendar`.
  *
- * Concurrency contract: callers that fan out (Promise.all over many sessions)
- * MUST pre-warm by calling `ensureVerdantCalendar` once and passing the result
- * down to every per-session function. Calling `ensureVerdantCalendar` from
- * inside a parallel loop races the DB read against the create+upsert, which
- * causes N concurrent calendar creates and leaves N-1 orphaned calendars in
- * the user's Google sidebar.
+ * Concurrency contract:
+ *   1. Within a single request: callers that fan out (Promise.all over many
+ *      sessions) MUST pre-warm by calling `ensureVerdantCalendar` once and
+ *      passing the result down to every per-session function.
+ *   2. Across concurrent requests: `ensureVerdantCalendar` itself is
+ *      protected by a Postgres advisory lock so two requests racing against a
+ *      null `verdantCalendarId` won't each create a new calendar.
  *
- * Read companion: `calendar-read.ts` (FreeBusy on primary; events.list on the
- * Verdant secondary).
+ * Timezone contract:
+ *   Stored ScheduledSession.start/end ISO strings are produced by the packer
+ *   and SSR renderer using `date-fns` runtime-local arithmetic. On Vercel
+ *   that runtime is UTC, so the strings represent "naive user-local"
+ *   clock-times tagged with `Z`. The schedule UI works because both the
+ *   producer and the renderer are in the same (server's UTC) tz, so the
+ *   illusion holds. At the GCal sync boundary that illusion would break —
+ *   GCal correctly interprets a `Z`-tagged datetime as UTC and shifts the
+ *   event by the user's UTC offset. We compensate here:
+ *     - WRITE: strip the `Z`, send the naive clock-time + the user's IANA
+ *       tz in the `timeZone` field. GCal then stores at the correct instant.
+ *     - READ (drift): the GCal API returns events with an explicit offset.
+ *       Convert the actual instant *back* to the user's local clock-time and
+ *       re-tag with `Z`, matching the storage convention.
  */
 import { prisma } from "@/lib/db";
 import type { ScheduledSession } from "@/types/plan";
@@ -74,8 +87,10 @@ function calendarHttpError(status: number, body: string): string {
   return `Calendar HTTP ${status}: ${clip}`;
 }
 
-async function createVerdantCalendar(accessToken: string): Promise<string> {
-  const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+async function createVerdantCalendar(
+  accessToken: string,
+  timeZone: string
+): Promise<string> {
   const res = await fetch(
     "https://www.googleapis.com/calendar/v3/calendars",
     {
@@ -118,66 +133,164 @@ async function calendarStillExists(
   throw new Error(calendarHttpError(res.status, body));
 }
 
-async function persistCalendarId(userId: string, id: string): Promise<void> {
-  await prisma.userPreference.upsert({
-    where: { userId },
-    create: {
-      userId,
-      timeWindows: JSON.stringify({}),
-      verdantCalendarId: id,
-      legacyVerdantEventsAckAt: new Date(0),
-    },
-    update: { verdantCalendarId: id },
-  });
+/**
+ * Hash a string userId into a 64-bit signed integer suitable for
+ * `pg_advisory_xact_lock`. FNV-1a 64-bit, then bitcast unsigned → signed.
+ */
+function hashUserIdToBigInt(s: string): bigint {
+  let h = 0xcbf29ce484222325n;
+  const mask = 0xffffffffffffffffn;
+  for (let i = 0; i < s.length; i++) {
+    h ^= BigInt(s.charCodeAt(i));
+    h = (h * 0x100000001b3n) & mask;
+  }
+  if (h >= 0x8000000000000000n) h -= 0x10000000000000000n;
+  return h;
 }
 
 /**
  * Get-or-create the Verdant secondary calendar for `userId`. Returns a
  * verified-live calendar id.
  *
- * Steps:
- *   1. Read `UserPreference.verdantCalendarId` from the DB.
- *   2. If present, validate by GET on the calendar resource. If it 404s
- *      (user deleted it in Google), fall through to recreate.
- *   3. Otherwise call `POST /calendars`, persist the new id, return it.
+ * Lock semantics:
+ *   - Fast path: if the DB already has a `verdantCalendarId` AND that calendar
+ *     still exists in Google, return it without acquiring a lock. This is the
+ *     hot path on every sync.
+ *   - Slow path: take a Postgres transactional advisory lock keyed on a hash
+ *     of the userId, re-check inside the lock (in case another concurrent
+ *     request just persisted), then create + persist. The lock releases at
+ *     transaction commit.
  *
- * Concurrency: every fanned-out write path MUST call this once before the
- * fan-out and reuse the returned id. Calling it in parallel from N tasks
- * results in N calendar creates because step 1 races the persist in step 3.
+ * Without the slow-path lock, two requests racing against `verdantCalendarId
+ * = null` (e.g., plan-creation's background `after()` and a clicked
+ * "sync to Google") would each call `POST /calendars` and leave one orphaned.
  */
 export async function ensureVerdantCalendar(args: {
   userId: string;
   accessToken: string;
+  /** IANA tz used when creating a fresh calendar's default zone. Optional. */
+  userTimeZone?: string | null;
 }): Promise<string> {
   const { userId, accessToken } = args;
-  const pref = await prisma.userPreference.findUnique({
+
+  // Fast path — no lock needed if we have a live id.
+  const initial = await prisma.userPreference.findUnique({
     where: { userId },
     select: { verdantCalendarId: true },
   });
-  if (pref?.verdantCalendarId) {
-    const live = await calendarStillExists(pref.verdantCalendarId, accessToken);
-    if (live) return pref.verdantCalendarId;
-    // Calendar was deleted in Google — fall through and recreate.
+  if (initial?.verdantCalendarId) {
+    const live = await calendarStillExists(
+      initial.verdantCalendarId,
+      accessToken
+    );
+    if (live) return initial.verdantCalendarId;
   }
-  const id = await createVerdantCalendar(accessToken);
-  await persistCalendarId(userId, id);
-  return id;
+
+  // Slow path — take an advisory lock so concurrent provisioning serializes.
+  const lockKey = hashUserIdToBigInt(userId);
+  const tz =
+    args.userTimeZone ?? Intl.DateTimeFormat().resolvedOptions().timeZone;
+  return prisma.$transaction(async (tx) => {
+    await tx.$queryRaw`SELECT pg_advisory_xact_lock(${lockKey}::bigint)`;
+    // Re-check inside the lock — another concurrent caller may have just
+    // persisted a fresh id.
+    const locked = await tx.userPreference.findUnique({
+      where: { userId },
+      select: { verdantCalendarId: true },
+    });
+    if (locked?.verdantCalendarId) {
+      const live = await calendarStillExists(
+        locked.verdantCalendarId,
+        accessToken
+      );
+      if (live) return locked.verdantCalendarId;
+    }
+    const id = await createVerdantCalendar(accessToken, tz);
+    await tx.userPreference.upsert({
+      where: { userId },
+      create: {
+        userId,
+        timeWindows: JSON.stringify({}),
+        verdantCalendarId: id,
+        legacyVerdantEventsAckAt: new Date(0),
+      },
+      update: { verdantCalendarId: id },
+    });
+    return id;
+  });
 }
+
+// ---------------------------------------------------------------------------
+// Timezone helpers (see "Timezone contract" at top of file).
+
+/**
+ * Strip a trailing `Z` or `±HH:MM` offset from an ISO datetime string. The
+ * result is a naive (unzoned) clock-time, suitable as `dateTime` when paired
+ * with an explicit `timeZone` field in the GCal API.
+ */
+function naivelocalISO(iso: string): string {
+  return iso.replace(/(?:Z|[+-]\d{2}:\d{2})$/, "");
+}
+
+/**
+ * Convert an absolute Date into a `Z`-tagged ISO string whose clock-time
+ * matches what that instant looks like in `tz`. This is the inverse of how
+ * the packer produces sessions: stored strings represent the user's local
+ * clock-time but use `Z` notation. After this helper, drift-adopted times
+ * stored back into `scheduleJson` follow the same convention so SSR
+ * formatters render them identically to packer-produced sessions.
+ */
+function absoluteToNaiveLocalISO(d: Date, tz: string): string {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: tz,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+  }).formatToParts(d);
+  const get = (type: string) =>
+    parts.find((p) => p.type === type)?.value ?? "00";
+  let hour = get("hour");
+  if (hour === "24") hour = "00"; // some Intl backends emit 24 for midnight
+  return `${get("year")}-${get("month")}-${get("day")}T${hour}:${get(
+    "minute"
+  )}:${get("second")}.000Z`;
+}
+
+/** Exposed for `calendar-read.ts` (drift) to convert GCal → storage form. */
+export { absoluteToNaiveLocalISO as toNaiveLocalISO };
+
+// ---------------------------------------------------------------------------
+// Event write functions.
 
 interface InsertResult {
   id: string;
 }
 
+function calendarEventDescription(session: ScheduledSession): string {
+  if (session.agenda && session.agenda.length > 0) {
+    const lines = session.agenda.map(
+      (a, i) => `${i + 1}. ${a.title} (~${a.minutes} min)`
+    );
+    return ["Verdant — accomplish during this session:", "", ...lines].join("\n");
+  }
+  return "Verdant sprout session";
+}
+
 /**
- * Create a single Google Calendar event on the user's Verdant secondary
- * calendar. Caller MUST pass a `calendarId` returned from `ensureVerdantCalendar`.
+ * Create a single event on the user's Verdant secondary calendar. Caller
+ * MUST pre-warm `calendarId` and pass `userTimeZone` (IANA, e.g.
+ * "America/New_York") so GCal interprets the stored clock-time correctly.
  */
 export async function syncSessionToGoogle(
   accessToken: string,
   calendarId: string,
+  userTimeZone: string,
   session: ScheduledSession
 ): Promise<InsertResult> {
-  const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
   const summary =
     session.title.length > 900 ? `${session.title.slice(0, 897)}…` : session.title;
   const res = await fetch(
@@ -192,8 +305,8 @@ export async function syncSessionToGoogle(
       },
       body: JSON.stringify({
         summary,
-        start: { dateTime: session.start, timeZone },
-        end: { dateTime: session.end, timeZone },
+        start: { dateTime: naivelocalISO(session.start), timeZone: userTimeZone },
+        end: { dateTime: naivelocalISO(session.end), timeZone: userTimeZone },
         description: calendarEventDescription(session),
       }),
     }
@@ -206,52 +319,42 @@ export async function syncSessionToGoogle(
   return { id: j.id };
 }
 
-function calendarEventDescription(session: ScheduledSession): string {
-  if (session.agenda && session.agenda.length > 0) {
-    const lines = session.agenda.map(
-      (a, i) => `${i + 1}. ${a.title} (~${a.minutes} min)`
-    );
-    return ["Verdant — accomplish during this session:", "", ...lines].join("\n");
-  }
-  return "Verdant sprout session";
-}
-
 /**
  * Insert one session, returning a copy with `calendarEventId` + `googleSynced`
  * set. Failure is non-fatal: returns the session with `googleSynced=false`.
- *
- * Caller is responsible for pre-warming `calendarId` via `ensureVerdantCalendar`.
  */
 export async function insertOrSkip(
   accessToken: string | undefined,
   calendarId: string | undefined,
+  userTimeZone: string | undefined,
   session: ScheduledSession
 ): Promise<ScheduledSession> {
-  if (!accessToken || !calendarId) {
+  if (!accessToken || !calendarId || !userTimeZone) {
     return { ...session, googleSynced: false };
   }
   try {
-    const { id } = await syncSessionToGoogle(accessToken, calendarId, session);
+    const { id } = await syncSessionToGoogle(
+      accessToken,
+      calendarId,
+      userTimeZone,
+      session
+    );
     return { ...session, calendarEventId: id, googleSynced: true };
   } catch {
     return { ...session, googleSynced: false };
   }
 }
 
-/**
- * PATCH an existing event on the Verdant secondary calendar to new times.
- * Used by the drag-to-move flow. Throws on non-OK; callers mark
- * `googleSynced=false` on failure.
- */
+/** PATCH an existing event on the Verdant secondary calendar to new times. */
 export async function updateSessionInGoogle(
   accessToken: string,
   calendarId: string,
+  userTimeZone: string,
   session: ScheduledSession
 ): Promise<void> {
   if (!session.calendarEventId) {
     throw new Error("session has no calendarEventId — call syncSessionToGoogle instead");
   }
-  const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
   const summary =
     session.title.length > 900 ? `${session.title.slice(0, 897)}…` : session.title;
   const res = await fetch(
@@ -266,8 +369,8 @@ export async function updateSessionInGoogle(
       },
       body: JSON.stringify({
         summary,
-        start: { dateTime: session.start, timeZone },
-        end: { dateTime: session.end, timeZone },
+        start: { dateTime: naivelocalISO(session.start), timeZone: userTimeZone },
+        end: { dateTime: naivelocalISO(session.end), timeZone: userTimeZone },
         description: calendarEventDescription(session),
       }),
     }
@@ -280,11 +383,12 @@ export async function updateSessionInGoogle(
 
 /**
  * Create Google Calendar events for sessions not yet marked synced. Runs
- * sequentially to reduce rate-limit risk. Caller pre-warms `calendarId`.
+ * sequentially to reduce rate-limit risk.
  */
 export async function syncUnsyncedSessions(
   accessToken: string | undefined,
   calendarId: string | undefined,
+  userTimeZone: string | undefined,
   sessions: ScheduledSession[]
 ): Promise<{
   sessions: ScheduledSession[];
@@ -307,8 +411,16 @@ export async function syncUnsyncedSessions(
   if (!calendarId) {
     return {
       sessions,
+      errors: ["Verdant calendar isn't ready yet. Try again in a moment."],
+      syncedCount: 0,
+      allAlreadySynced: false,
+    };
+  }
+  if (!userTimeZone) {
+    return {
+      sessions,
       errors: [
-        "Verdant calendar isn't ready yet. Try again in a moment.",
+        "Verdant doesn't know your timezone yet. Refresh the page once and try again.",
       ],
       syncedCount: 0,
       allAlreadySynced: false,
@@ -331,7 +443,12 @@ export async function syncUnsyncedSessions(
     }
     pendingCount++;
     try {
-      const { id } = await syncSessionToGoogle(accessToken, calendarId, sess);
+      const { id } = await syncSessionToGoogle(
+        accessToken,
+        calendarId,
+        userTimeZone,
+        sess
+      );
       syncedCount++;
       out.push({ ...sess, calendarEventId: id, googleSynced: true });
     } catch (e) {

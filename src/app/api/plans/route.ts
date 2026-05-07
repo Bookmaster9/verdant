@@ -368,10 +368,16 @@ export async function POST(request: Request) {
               const calendarId = await ensureVerdantCalendar({
                 userId,
                 accessToken,
+                userTimeZone: pref.userTimeZone,
               });
               const synced = await Promise.all(
                 schedule.map((sess) =>
-                  insertOrSkip(accessToken, calendarId, sess)
+                  insertOrSkip(
+                    accessToken,
+                    calendarId,
+                    pref.userTimeZone ?? undefined,
+                    sess
+                  )
                 )
               );
               await prisma.learningPlan.update({

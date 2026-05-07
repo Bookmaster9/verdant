@@ -82,6 +82,11 @@ model UserPreference {
   /// calendar.app.created scope. Null = not yet created. Lazy-provisioned on
   /// the first push attempt; cleared (then recreated) on 404 from Google.
   verdantCalendarId  String?
+  /// IANA timezone string (e.g. "America/New_York") captured from the user's
+  /// browser via `Intl.DateTimeFormat().resolvedOptions().timeZone`. Used
+  /// when pushing events to Google Calendar so server-tz drift doesn't
+  /// silently shift sessions. Null until the client posts it on first load.
+  userTimeZone       String?
   /// Last seen Google scope problem after OAuth. One of:
   ///   "freebusy-denied" | "app-created-denied" | "both-denied" | null.
   /// When non-null the dashboard surfaces a "reconnect Google" banner.

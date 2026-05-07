@@ -125,8 +125,24 @@ export async function POST(request: Request, { params }: RouteParams) {
         calendarEventId: previousCalendarEventId,
       };
       try {
-        const calendarId = await ensureVerdantCalendar({ userId, accessToken });
-        await updateSessionInGoogle(accessToken, calendarId, movedSession);
+        const pref = await prisma.userPreference.findUnique({
+          where: { userId },
+          select: { userTimeZone: true },
+        });
+        const userTimeZone =
+          pref?.userTimeZone ??
+          Intl.DateTimeFormat().resolvedOptions().timeZone;
+        const calendarId = await ensureVerdantCalendar({
+          userId,
+          accessToken,
+          userTimeZone,
+        });
+        await updateSessionInGoogle(
+          accessToken,
+          calendarId,
+          userTimeZone,
+          movedSession
+        );
         // Mark synced=true once Google confirms.
         const fresh = await prisma.learningPlan.findUnique({ where: { id } });
         if (!fresh) return;

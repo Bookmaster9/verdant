@@ -239,11 +239,24 @@ export async function POST(request: Request, { params }: RouteParams) {
       };
       runAfter(async () => {
         try {
+          const pref = await prisma.userPreference.findUnique({
+            where: { userId },
+            select: { userTimeZone: true },
+          });
+          const userTimeZone =
+            pref?.userTimeZone ??
+            Intl.DateTimeFormat().resolvedOptions().timeZone;
           const calendarId = await ensureVerdantCalendar({
             userId,
             accessToken,
+            userTimeZone,
           });
-          await updateSessionInGoogle(accessToken, calendarId, moved);
+          await updateSessionInGoogle(
+            accessToken,
+            calendarId,
+            userTimeZone,
+            moved
+          );
           const fresh = await prisma.learningPlan.findUnique({ where: { id } });
           if (!fresh) return;
           const list = JSON.parse(

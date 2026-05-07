@@ -22,6 +22,8 @@
  * read" (especially drift, which would otherwise wipe every synced session).
  */
 
+import { toNaiveLocalISO } from "@/lib/google-calendar";
+
 const FREEBUSY_URL = "https://www.googleapis.com/calendar/v3/freeBusy";
 const EVENTS_LIST_URL = (calendarId: string): string =>
   `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(
@@ -182,6 +184,15 @@ export interface GetVerdantEventsOptions {
   accessToken: string | undefined;
   /** Verdant secondary calendar id (UserPreference.verdantCalendarId). */
   calendarId: string | null | undefined;
+  /**
+   * IANA tz the user views events in. GCal returns events with an explicit
+   * offset; we convert each back to the same naive-local-Z storage format
+   * the packer uses, so drift comparisons against `ScheduledSession.start`
+   * are apples-to-apples. Pass `null` to skip the conversion (events come
+   * back as their absolute UTC instant — only correct if the consumer is
+   * also UTC-naive, which is fragile).
+   */
+  userTimeZone: string | null | undefined;
   from: Date;
   to: Date;
   noCache?: boolean;
@@ -198,7 +209,8 @@ export interface GetVerdantEventsOptions {
 export async function getVerdantEvents(
   opts: GetVerdantEventsOptions
 ): Promise<VerdantEventsResult> {
-  const { userId, accessToken, calendarId, from, to, noCache } = opts;
+  const { userId, accessToken, calendarId, userTimeZone, from, to, noCache } =
+    opts;
   if (!accessToken) return { ok: false, events: [] };
   if (!calendarId) return { ok: true, events: [] };
   if (to <= from) return { ok: true, events: [] };
@@ -240,10 +252,21 @@ export async function getVerdantEvents(
         const startISO = ev.start?.dateTime;
         const endISO = ev.end?.dateTime;
         if (!startISO || !endISO) continue;
-        const start = new Date(startISO);
-        const end = new Date(endISO);
-        if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) continue;
-        if (end <= start) continue;
+        const startAbs = new Date(startISO);
+        const endAbs = new Date(endISO);
+        if (Number.isNaN(startAbs.getTime()) || Number.isNaN(endAbs.getTime()))
+          continue;
+        if (endAbs <= startAbs) continue;
+        // Convert the absolute instant back to the storage convention
+        // (naive user-local clock-time tagged with `Z`). Without this,
+        // drift comparisons would compare apples (UTC instant from GCal)
+        // to oranges (naive-local-Z from the packer).
+        const start = userTimeZone
+          ? new Date(toNaiveLocalISO(startAbs, userTimeZone))
+          : startAbs;
+        const end = userTimeZone
+          ? new Date(toNaiveLocalISO(endAbs, userTimeZone))
+          : endAbs;
         events.push({ start, end, calendarEventId: ev.id });
       }
       pageToken = page.nextPageToken;

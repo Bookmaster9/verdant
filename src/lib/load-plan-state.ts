@@ -54,7 +54,7 @@ export async function loadPlanState(args: {
   // getVerdantEvents short-circuits to ok=true with zero events.
   const pref = await prisma.userPreference.findUnique({
     where: { userId },
-    select: { verdantCalendarId: true },
+    select: { verdantCalendarId: true, userTimeZone: true },
   });
   const [externalRead, verdantRead] = await Promise.all([
     getExternalBusy({ userId, accessToken, from, to }),
@@ -62,6 +62,7 @@ export async function loadPlanState(args: {
       userId,
       accessToken,
       calendarId: pref?.verdantCalendarId ?? null,
+      userTimeZone: pref?.userTimeZone ?? null,
       from,
       to,
     }),

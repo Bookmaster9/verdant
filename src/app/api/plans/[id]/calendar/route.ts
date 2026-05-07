@@ -26,6 +26,14 @@ export async function POST(_: Request, { params }: RouteParams) {
   const schedule = JSON.parse(plan.scheduleJson || "[]") as ScheduledSession[];
   const accessToken = s.accessToken;
 
+  // Look up the user's tz once — needed both for calendar creation's default
+  // tz and for per-event payloads.
+  const pref = await prisma.userPreference.findUnique({
+    where: { userId: s.user.id },
+    select: { userTimeZone: true },
+  });
+  const userTimeZone = pref?.userTimeZone ?? undefined;
+
   // Pre-warm calendar provisioning before the per-session loop. The loop
   // itself is sequential, but ensuring this happens once (validated against
   // Google) keeps the contract identical to the parallel call sites.
@@ -35,6 +43,7 @@ export async function POST(_: Request, { params }: RouteParams) {
       calendarId = await ensureVerdantCalendar({
         userId: s.user.id,
         accessToken,
+        userTimeZone,
       });
     } catch (err) {
       const message = err instanceof Error ? err.message : "Calendar setup failed";
@@ -46,7 +55,7 @@ export async function POST(_: Request, { params }: RouteParams) {
   }
 
   const { sessions, errors, syncedCount, allAlreadySynced } =
-    await syncUnsyncedSessions(accessToken, calendarId, schedule);
+    await syncUnsyncedSessions(accessToken, calendarId, userTimeZone, schedule);
 
   await prisma.learningPlan.update({
     where: { id },
