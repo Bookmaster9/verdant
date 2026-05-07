@@ -585,17 +585,14 @@ function UtilityOverlay({ hourUtility }: { hourUtility: HourUtilityMap }) {
                 {hourGlyph(h)}
               </div>
             ))}
-            {DAY_LABELS.map((day, dayIdx) => {
-              const dow = DAY_INDEX_FOR_LABEL[day];
-              return (
-                <UtilityRow
-                  key={day}
-                  day={day}
-                  dow={dow}
-                  decayed={decayed}
-                />
-              );
-            })}
+            {DAY_LABELS.map((day) => (
+              <UtilityRow
+                key={day}
+                day={day}
+                dow={DAY_INDEX_FOR_LABEL[day]}
+                decayed={decayed}
+              />
+            ))}
           </div>
           <div
             style={{
