@@ -8,6 +8,7 @@ import {
   SIGNAL_MAGNITUDE,
 } from "@/lib/hour-utility";
 import type { ScheduledSession } from "@/types/plan";
+import { revalidatePath } from "next/cache";
 import { z } from "zod";
 
 const body = z.object({
@@ -117,6 +118,15 @@ export async function POST(request: Request, { params }: RouteParams) {
     where: { id },
     data: { scheduleJson: JSON.stringify(updated) },
   });
+
+  // Drop any cached RSC payload that renders this plan's schedule. Without
+  // this, the user can move a session on /schedule and then navigate to
+  // /plan/[id] (or the dashboard) and see the old slot for ~30s of stale
+  // App-Router client cache. Revalidate every surface that reads scheduleJson.
+  revalidatePath(`/plan/${id}`);
+  revalidatePath(`/plan/${id}/session/[taskId]`, "page");
+  revalidatePath("/schedule");
+  revalidatePath("/");
 
   // Hour-utility signal: move emits a paired (origin, destination) signal.
   // If the original start was already in the past, classify as "pushed back"
