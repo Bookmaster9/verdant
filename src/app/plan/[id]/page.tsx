@@ -56,24 +56,9 @@ export default async function PlanPage({
   );
 
   const phases = sprout.phases || [];
-  const phaseTaskCounts = phases.map((_, idx) => {
-    const phaseTasks = (sprout.tasks || []).filter(
-      (t) => phaseForWeek(t.weekIndex, phases.length) === idx
-    );
-    const phaseDone = phaseTasks.filter((t) => done.has(t.id)).length;
-    return { total: phaseTasks.length, done: phaseDone };
-  });
-  const activePhase = (() => {
-    const i = phaseTaskCounts.findIndex(
-      (p) => p.done < p.total && p.total > 0
-    );
-    return i === -1 ? Math.max(0, phaseTaskCounts.length - 1) : i;
-  })();
 
-  // Status-based bucketing: a task is in the journal iff the user committed it
-  // (rated + marked done). Everything else lives in to-do, including past-but-
-  // unmarked sessions. The schedule timeline is the *display* axis, not the
-  // ownership axis — completion status alone decides the bucket.
+  // Reviews live as ReviewInstance rows (not in sprout.tasks). We need them
+  // both for (a) the to-do/journal split below and (b) phase progress weighting.
   const reviewInstances = await prisma.reviewInstance.findMany({
     where: { planId: id },
     include: { lessonState: true },
@@ -81,6 +66,50 @@ export default async function PlanPage({
   const reviewCompletedIds = new Set(
     reviewInstances.filter((r) => r.completedAt != null).map((r) => r.id)
   );
+
+  // Trail-to-bloom weighting:
+  //   - Buckets are sized to the actual plan length, not the 16-week default.
+  //     A 4-phase 8-week plan gets 2-week buckets so every phase fills up.
+  //   - Reviews count toward phase progress, weighted by their `minutes`
+  //     (typically 15 min vs ~60 min for a lesson). This way a review-heavy
+  //     plan moves the trail when reviews get rated, but a single
+  //     lesson-completion still moves it more than a single review.
+  const planWeeks = Math.max(
+    1,
+    Math.ceil(
+      (new Date(plan.deadline).getTime() - new Date(plan.startDate).getTime()) /
+        (7 * 86_400_000)
+    )
+  );
+  const REVIEW_WEIGHT_MINUTES = 15; // mirrors REVIEW_MINUTES in fsrs-to-tasks.ts
+  const phaseTaskCounts = phases.map((_, idx) => {
+    let total = 0;
+    let doneWeight = 0;
+    for (const t of sprout.tasks || []) {
+      if (phaseForWeek(t.weekIndex, phases.length, planWeeks) !== idx) continue;
+      total += t.minutes;
+      if (done.has(t.id)) doneWeight += t.minutes;
+    }
+    for (const ri of reviewInstances) {
+      const dueWeek = Math.max(
+        0,
+        Math.floor(
+          (ri.dueAt.getTime() - new Date(plan.startDate).getTime()) /
+            (7 * 86_400_000)
+        )
+      );
+      if (phaseForWeek(dueWeek, phases.length, planWeeks) !== idx) continue;
+      total += REVIEW_WEIGHT_MINUTES;
+      if (ri.completedAt != null) doneWeight += REVIEW_WEIGHT_MINUTES;
+    }
+    return { total, done: doneWeight };
+  });
+  const activePhase = (() => {
+    const i = phaseTaskCounts.findIndex(
+      (p) => p.done < p.total && p.total > 0
+    );
+    return i === -1 ? Math.max(0, phaseTaskCounts.length - 1) : i;
+  })();
 
   function entryTaskIds(row: ScheduledSession): string[] {
     if (row.agenda && row.agenda.length > 0) {

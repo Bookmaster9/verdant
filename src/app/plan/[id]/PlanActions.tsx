@@ -30,11 +30,22 @@ export function PlanActions({
       error?: string;
       plan?: unknown;
       message?: string;
+      summary?: string;
+      drops?: Array<{ kind: string; reason: string; ref?: string }>;
     };
     if (!res.ok) {
       setErr(j.error || "Could not apply edit");
     } else {
-      setMessage(j.message || "Updated.");
+      setMessage(j.summary || j.message || "Updated.");
+      // When the LLM emitted refs we couldn't resolve, surface them. The
+      // schedule-mutating part of the request still applied; this is a
+      // partial-success warning.
+      if (j.drops && j.drops.length > 0) {
+        const lines = j.drops.map(
+          (d) => `couldn't apply ${d.kind}${d.ref ? ` ${d.ref}` : ""}: ${d.reason}`
+        );
+        setErr(lines.join(" · "));
+      }
       setText("");
       r.refresh();
     }

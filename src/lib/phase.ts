@@ -1,10 +1,22 @@
 /**
- * Map a task's weekIndex to a phase index, given the total phase count.
- * Buckets weeks evenly across phases; assumes plans run ≤16 weeks.
+ * Map a task's weekIndex to a phase index.
+ *
+ * When `planWeeks` is provided, buckets are sized to the actual plan length
+ * (`ceil(planWeeks / totalPhases)`), so a 4-phase 8-week plan gets 2-week
+ * buckets and every phase has tasks. Without `planWeeks`, falls back to the
+ * legacy 16-week assumption for callers that don't have plan duration handy.
  */
-export function phaseForWeek(weekIndex: number, totalPhases: number): number {
+export function phaseForWeek(
+  weekIndex: number,
+  totalPhases: number,
+  planWeeks?: number
+): number {
   if (totalPhases <= 0) return 0;
-  const bucket = Math.floor(weekIndex / Math.max(1, Math.ceil(16 / totalPhases)));
+  const span =
+    planWeeks && planWeeks > 0 ? planWeeks : 16;
+  const bucket = Math.floor(
+    weekIndex / Math.max(1, Math.ceil(span / totalPhases))
+  );
   return Math.max(0, Math.min(totalPhases - 1, bucket));
 }
 

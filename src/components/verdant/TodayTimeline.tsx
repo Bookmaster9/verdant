@@ -16,13 +16,22 @@ export type TimelineEvent = {
   planId?: string;
 };
 
-const START_H = 7;
-const END_H = 22;
+const START_H = 0;
+const END_H = 24;
 const TOTAL_MIN = (END_H - START_H) * 60;
+/** Hour labels every Nth hour — every 3 hours keeps the rail readable at 24h. */
+const LABEL_STEP_H = 3;
 
 function toMin(t: string) {
   const [h, m] = t.split(":").map(Number);
   return (h - START_H) * 60 + m;
+}
+
+function hourGlyph(h: number): string {
+  if (h === 0 || h === 24) return "12a";
+  if (h === 12) return "12p";
+  if (h < 12) return `${h}a`;
+  return `${h - 12}p`;
 }
 
 function colorFor(e: TimelineEvent) {
@@ -117,6 +126,7 @@ export function TodayTimeline({
         <div style={{ position: "relative", height: 18 }}>
           {Array.from({ length: END_H - START_H + 1 }).map((_, i) => {
             const h = START_H + i;
+            if (h % LABEL_STEP_H !== 0) return null;
             return (
               <div
                 key={i}
@@ -129,7 +139,7 @@ export function TodayTimeline({
                   color: "var(--ink-faded)",
                 }}
               >
-                {(h <= 12 ? h : h - 12) + (h < 12 ? "a" : "p")}
+                {hourGlyph(h)}
               </div>
             );
           })}

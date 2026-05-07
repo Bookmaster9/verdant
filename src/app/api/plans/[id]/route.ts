@@ -129,6 +129,7 @@ export async function PATCH(request: Request, { params }: RouteParams) {
     outSchedule = p.data.scheduleJson;
   }
   let editSummary: string | null = null;
+  let editDrops: Array<{ kind: string; reason: string; ref?: string }> = [];
   let outManualBlackoutsFromAI: string | null = null;
   let outPlanJsonFromAI: string | null = null;
   let outPlacementRulesFromAI: string | null = null;
@@ -196,6 +197,7 @@ export async function PATCH(request: Request, { params }: RouteParams) {
     outPlanJsonFromAI = JSON.stringify(result.plan);
     outManualBlackoutsFromAI = result.manualBlackoutsJson;
     editSummary = llm.summary;
+    editDrops = llm.drops;
     if (p.data.persistRules && llm.rules.length > 0) {
       // Append new rules to the persistent set. Pin rules are intentionally
       // skipped — they reference a specific sessionId and don't make sense
@@ -478,7 +480,11 @@ export async function PATCH(request: Request, { params }: RouteParams) {
     where: { id },
     data,
   });
-  return NextResponse.json({ plan: updated, summary: editSummary });
+  return NextResponse.json({
+    plan: updated,
+    summary: editSummary,
+    drops: editDrops.length > 0 ? editDrops : undefined,
+  });
 }
 
 export async function DELETE(_: Request, { params }: RouteParams) {

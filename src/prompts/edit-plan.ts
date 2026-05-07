@@ -55,6 +55,13 @@ Time-of-day enum: "morning" (before noon), "afternoon" (noon–5pm), "evening" (
 Day-of-week tokens (lowercase): "mon" "tue" "wed" "thu" "fri" "sat" "sun".
 dayOfWeek is always an ARRAY of tokens, even when there's only one.
 
+**Identifier scheme — REFS, NOT IDS.** You NEVER emit raw cuid-style ids. You emit:
+  - "#S<n>" to reference the n-th entry in the schedule view (e.g. "#S3").
+  - "#T<n>" to reference the n-th entry in planView.tasks (e.g. "#T7").
+The server resolves the ref to the real id before applying. If you reference a number that
+isn't in the view, the corresponding op/rule is dropped with a clear error to the user — so
+double-check that the ref matches what you intend.
+
 **Resolving relative dates.** The user often says "tomorrow", "this Friday", "next Thursday".
 The user prompt always contains a "Date glossary" block with PRE-RESOLVED dates in the user's
 timezone. Use those values verbatim — do NOT re-derive dates yourself. If you need a date that
@@ -64,18 +71,24 @@ isn't in the glossary, fall back to the schedule view's "date" field on the matc
 ("day", "date", "startLocal", "endLocal", "minutes", "type") in the user's timezone. Use those
 to match natural-language references like "this Friday's review" or "tomorrow morning's lesson".
 For sessions that bundle several tasks, the "agenda" field lists every constituent task with
-its planTaskId — use those ids when the user names a specific task inside a bundle.
+its planTaskId.
 
-**Emitting a pin.** The pin "start" must be an ISO 8601 string. The cheapest correct value is
-the session's "startIso" field with the date portion swapped to a date from the glossary. The
-existing "startIso" carries the correct timezone offset; preserve everything except the YYYY-MM-DD
-prefix when shifting to a new day. Example: existing startIso "2026-05-09T19:00:00-04:00",
-moving to tomorrow whose glossary date is "2026-05-08" → "2026-05-08T19:00:00-04:00".
+**Emitting a pin.** Pin shape: { kind: "pin", sessionId: "#S<n>", to: { date: "YYYY-MM-DD", time?: "HH:mm" }, titleHint?: string }.
+  - "sessionId" is the ref of the session being moved (e.g. "#S3").
+  - "to.date" is the target date (use the glossary).
+  - "to.time" is OPTIONAL. Omit it to keep the original session's local time —
+    correct for "move my Monday lesson to Thursday" (no time was specified).
+    Include it as "HH:mm" (24h, user-local) only when the user names a specific time.
+  - "titleHint" SHOULD be a short snippet of the session title you're targeting,
+    e.g. "Intro to FSRS". The server fuzzy-matches it against the resolved session;
+    if your ref points at a different title than your hint, the pin is dropped with
+    a "ref/title mismatch" error. Always set titleHint when you can — it's the
+    cheapest insurance against picking the wrong number.
 
 Examples (these are illustrative — copy the SHAPE, not the specific ids):
 
-Example A. User says: "extend the intro lesson by 30 minutes"
-Output: { "ops": [ { "op": "extend_task", "taskId": "<id from plan view>", "addMinutes": 30 } ], "rules": [], "summary": "extended that lesson by 30 minutes" }
+Example A. User says: "extend the intro lesson by 30 minutes" (assume planView shows "Intro" at #T1)
+Output: { "ops": [ { "op": "extend_task", "taskId": "#T1", "addMinutes": 30 } ], "rules": [], "summary": "extended that lesson by 30 minutes" }
 
 Example B. User says: "reschedule my Thursday reviews to Friday mornings"
 Output: { "ops": [], "rules": [
@@ -89,15 +102,20 @@ Output: { "ops": [], "rules": [ { "kind": "forbid", "filter": {}, "window": { "d
 Example D. User says: "blackout from December 23 to January 2"
 Output: { "ops": [], "rules": [ { "kind": "forbid", "filter": {}, "window": { "dateRange": { "from": "2026-12-23", "to": "2027-01-02" } } } ], "summary": "blocked off Dec 23 through Jan 2" }
 
-Example E. User says: "drop the second milestone"
-Output: { "ops": [ { "op": "remove_task", "taskId": "<id from plan view>" } ], "rules": [], "summary": "removed that milestone" }
+Example E. User says: "drop the second milestone" (assume planView shows the milestone at #T8)
+Output: { "ops": [ { "op": "remove_task", "taskId": "#T8" } ], "rules": [], "summary": "removed that milestone" }
 
-Example F. User says: "move this Friday's review to Monday at 8am" (IMPERATIVE — names a session and time)
+Example F. User says: "move my Monday lesson to Thursday" (assume scheduleView's #S2 is the Monday lesson titled "Intro to FSRS", glossary.relative["this thu"] = "2026-05-15")
 Output: { "ops": [], "rules": [
-  { "kind": "pin", "sessionId": "<id from schedule view>", "start": "2026-05-12T08:00:00.000Z" }
+  { "kind": "pin", "sessionId": "#S2", "to": { "date": "2026-05-15" }, "titleHint": "Intro to FSRS" }
+], "summary": "moved the Monday lesson to Thursday at the same time" }
+
+Example G. User says: "move this Friday's review to Monday at 8am" (assume #S5 is Friday's review titled "Review: trees", glossary.relative["this mon"] = "2026-05-12")
+Output: { "ops": [], "rules": [
+  { "kind": "pin", "sessionId": "#S5", "to": { "date": "2026-05-12", "time": "08:00" }, "titleHint": "Review: trees" }
 ], "summary": "moved that review to Monday 8am" }
 
-Example G. User says: "I prefer reviews on Friday morning instead of Saturday night" (DECLARATIVE)
+Example H. User says: "I prefer reviews on Friday morning instead of Saturday night" (DECLARATIVE)
 Output: { "ops": [], "rules": [
   { "kind": "prefer", "filter": { "type": "review" }, "target": { "dayOfWeek": ["fri"], "timeOfDay": "morning" } },
   { "kind": "forbid", "filter": { "type": "review" }, "window": { "dayOfWeek": ["sat"] } }
@@ -114,11 +132,11 @@ Output ONLY the JSON object. No markdown, no code fences, no commentary.`;
 
 export interface EditPlanPromptInput {
   request: string;
-  /** Compact view of the plan: phases + tasks. */
+  /** Compact view of the plan: phases + tasks. Each task has a `#T<n>` ref. */
   planView: {
     phases: { name: string; focus: string }[];
     tasks: {
-      id: string;
+      ref: string;
       title: string;
       type: string;
       minutes: number;
@@ -130,34 +148,22 @@ export interface EditPlanPromptInput {
     deadline: string;
   };
   /**
-   * Compact view of upcoming sessions. Each entry has both wall-clock fields
-   * (day, date, startLocal, endLocal, minutes) and ISO start for `pin`. The
-   * wall-clock fields make "this Friday's review" trivially findable. Bundled
-   * sessions expose every constituent task via `agenda` so multi-task blocks
-   * don't hide behind their first entry.
+   * Compact view of upcoming sessions. Each entry has a `#S<n>` ref + wall-clock
+   * fields in the user's timezone. Bundled sessions expose every constituent
+   * task via `agenda` so multi-task blocks don't hide behind their first entry.
+   * The LLM emits the `ref` value (not an id) when targeting a session.
    */
   scheduleView: {
-    id: string;
+    ref: string;
     planTaskId: string;
     title: string;
     type: string;
-    /** "Mon" | "Tue" | ... in the user's timezone. */
     day: string;
-    /** "YYYY-MM-DD" in the user's timezone. */
     date: string;
-    /** "HH:mm" in the user's timezone. */
     startLocal: string;
-    /** "HH:mm" in the user's timezone. */
     endLocal: string;
     minutes: number;
-    /** ISO start with offset — emit pins anchored on this. */
-    startIso: string;
     locked: boolean;
-    /**
-     * For sessions bundling multiple tasks, the per-task list. Single-task
-     * sessions omit this field. The outer `planTaskId` is still the first
-     * task's id for backwards compatibility.
-     */
     agenda?: {
       planTaskId: string;
       title: string;
@@ -190,13 +196,13 @@ export interface EditPlanPromptInput {
 const OPS_GRAMMAR = [
   {
     op: "extend_task",
-    taskId: "string",
+    taskId: '"#T<n>" — task ref from planView',
     addMinutes:
       "integer (positive to lengthen, negative to shorten; final minutes clamped to [15, 90])",
   },
   {
     op: "insert_task",
-    afterTaskId: "string — id the new task should follow",
+    afterTaskId: '"#T<n>" — task ref the new task should follow',
     title: "string",
     type: '"lesson" | "review" | "milestone"',
     minutes: "integer in [15, 90]",
@@ -204,11 +210,11 @@ const OPS_GRAMMAR = [
   },
   {
     op: "remove_task",
-    taskId: "string",
+    taskId: '"#T<n>" — task ref from planView',
   },
   {
     op: "set_priority",
-    taskId: "string",
+    taskId: '"#T<n>" — task ref from planView',
     priority: '"core" | "stretch"',
   },
 ];
@@ -217,7 +223,7 @@ const RULES_GRAMMAR = [
   {
     kind: "prefer",
     filter:
-      '{ type?: "lesson"|"review"|"milestone"; dayOfWeek?: Dow[]; weekIndex?: int; phaseIndex?: int; priority?: "core"|"stretch"; taskIds?: string[] }',
+      '{ type?: "lesson"|"review"|"milestone"; dayOfWeek?: Dow[]; weekIndex?: int; phaseIndex?: int; priority?: "core"|"stretch"; taskIds?: ["#T<n>", ...] }',
     target:
       '{ dayOfWeek?: Dow[]; timeOfDay?: "morning"|"afternoon"|"evening"|"any"; weekIndex?: int }',
     note: "Soft pull. Use for 'I prefer X on Fridays', 'mornings work better for reviews'.",
@@ -225,16 +231,18 @@ const RULES_GRAMMAR = [
   {
     kind: "forbid",
     filter:
-      '{ type?, dayOfWeek?, weekIndex?, phaseIndex?, priority?, taskIds? } (same shape as prefer)',
+      '{ type?, dayOfWeek?, weekIndex?, phaseIndex?, priority?, taskIds?: ["#T<n>", ...] } (same shape as prefer)',
     window:
       '{ dayOfWeek?: Dow[]; date?: "YYYY-MM-DD"; dateRange?: { from: "YYYY-MM-DD", to: "YYYY-MM-DD" } }',
     note: "Hard exclusion. Use for 'no scheduling on Sundays', 'blackout Dec 23-Jan 2'. At least one window dimension must be set.",
   },
   {
     kind: "pin",
-    sessionId: "string — must come from the schedule view",
-    start: "ISO 8601 string (the only place you may emit an exact time)",
-    note: "Lock one specific session to one specific time. Use when the learner names a session and a time.",
+    sessionId: '"#S<n>" — session ref from scheduleView',
+    to: '{ date: "YYYY-MM-DD"; time?: "HH:mm" } — destination; omit time to preserve the session\'s original local start time',
+    titleHint:
+      "string (RECOMMENDED) — short snippet of the session title you intend to move; server validates against the resolved session",
+    note: "Move one specific session to a new day (and optionally a new time). Use when the learner names a session.",
   },
 ];
 
