@@ -1,52 +1,80 @@
 /**
  * Read-side Google Calendar access for Verdant.
  *
- * Companion to `google-calendar.ts` (write-only). Provides a single chokepoint
- * `getBusyIntervals` that fetches the user's calendar events in a window and
- * returns busy intervals for the planner and packer to consume.
+ * Two distinct sources after the calendar-scope migration:
  *
- * Filtering rules (settled in design Q2):
- *   - status === "cancelled"      → skip
- *   - transparency === "transparent" ("free") → skip
- *   - own attendee responseStatus === "declined" → skip
- *   - all-day events (date, no dateTime) → skip
- *   - Verdant-sourced events are tagged on the returned interval but NOT skipped
- *     here; callers decide whether to include them based on per-session lock state.
+ *   - `getExternalBusy` — POSTs to FreeBusy on the user's primary calendar.
+ *     Returns `{start, end}` intervals with NO event metadata (id, title,
+ *     transparency, attendee state). The FreeBusy endpoint already filters
+ *     out cancelled / transparent / declined events server-side, so callers
+ *     just consume opaque busy ranges. This is what the planner, conflict
+ *     check, and onboarding auto-fill use.
  *
- * Verdant-sourced detection: events whose description starts with the marker
- * written by `calendarEventDescription` in google-calendar.ts. (Future PR may
- * switch to `extendedProperties.private.verdant` once the writer sets it.)
+ *   - `getVerdantEvents` — GET on the Verdant secondary calendar
+ *     (`UserPreference.verdantCalendarId`). Returns full event objects (id,
+ *     start, end). Used only by drift reconciliation, since drift needs to
+ *     match live calendar event ids back to stored sessions.
+ *
+ * Auth: writes/reads through these functions require a valid access token
+ * minted with both `calendar.app.created` and `calendar.events.freebusy`
+ * scopes. Functions return `{ok: false}` discriminated results on missing
+ * token or API failure — callers must distinguish "no events" from "couldn't
+ * read" (especially drift, which would otherwise wipe every synced session).
  */
 
-const CAL_PRIMARY = "primary";
-const VERDANT_DESCRIPTION_MARKER = "Verdant";
+const FREEBUSY_URL = "https://www.googleapis.com/calendar/v3/freeBusy";
+const EVENTS_LIST_URL = (calendarId: string): string =>
+  `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(
+    calendarId
+  )}/events`;
 
+/** Opaque external busy interval. No id, no title — FreeBusy doesn't expose them. */
 export interface BusyInterval {
   start: Date;
   end: Date;
-  /** Google Calendar event id (always present for events we read). */
-  calendarEventId: string;
-  /** True if this event was created by Verdant (description marker match). */
-  isVerdant: boolean;
 }
 
-interface CacheEntry {
+/** Verdant-owned event read from the secondary calendar. Used only by drift. */
+export interface VerdantEvent {
+  start: Date;
+  end: Date;
+  /** Google Calendar event id on the Verdant secondary calendar. */
+  calendarEventId: string;
+}
+
+export interface BusyIntervalsResult {
+  /** True when the read succeeded (even if it returned zero intervals). */
+  ok: boolean;
+  intervals: BusyInterval[];
+}
+
+export interface VerdantEventsResult {
+  ok: boolean;
+  events: VerdantEvent[];
+}
+
+const CACHE_TTL_MS = 60_000;
+
+interface BusyCacheEntry {
   expiresAt: number;
   intervals: BusyInterval[];
   ok: boolean;
 }
-
-export interface BusyIntervalsResult {
-  /** True when the calendar read succeeded (even if it returned no events). */
+interface VerdantCacheEntry {
+  expiresAt: number;
+  events: VerdantEvent[];
   ok: boolean;
-  intervals: BusyInterval[];
 }
 
-const CACHE_TTL_MS = 60_000;
-const cache = new Map<string, CacheEntry>();
+const busyCache = new Map<string, BusyCacheEntry>();
+const verdantCache = new Map<string, VerdantCacheEntry>();
 
-function cacheKey(userId: string, from: Date, to: Date): string {
-  return `${userId}|${from.toISOString()}|${to.toISOString()}`;
+function cacheKey(prefix: string, userId: string, from: Date, to: Date): string {
+  return `${prefix}|${userId}|${from.toISOString()}|${to.toISOString()}`;
+}
+
+interface FreeBusyResponse {
+  calendars?: Record<string, { busy?: Array<{ start: string; end: string }>; errors?: Array<{ reason?: string }> }>;
 }
 
 interface GoogleEventDateTime {
@@ -54,87 +82,18 @@ interface GoogleEventDateTime {
   date?: string;
   timeZone?: string;
 }
-
-interface GoogleAttendee {
-  self?: boolean;
-  responseStatus?: string;
-  email?: string;
-}
-
 interface GoogleEvent {
   id: string;
   status?: string;
-  summary?: string;
-  description?: string;
-  transparency?: string;
   start?: GoogleEventDateTime;
   end?: GoogleEventDateTime;
-  attendees?: GoogleAttendee[];
 }
-
 interface GoogleEventsListResponse {
   items?: GoogleEvent[];
   nextPageToken?: string;
 }
 
-function isVerdantEvent(ev: GoogleEvent): boolean {
-  const desc = ev.description ?? "";
-  return desc.trimStart().startsWith(VERDANT_DESCRIPTION_MARKER);
-}
-
-function ownDeclined(ev: GoogleEvent): boolean {
-  if (!ev.attendees) return false;
-  const me = ev.attendees.find((a) => a.self);
-  return me?.responseStatus === "declined";
-}
-
-function eventToInterval(ev: GoogleEvent): BusyInterval | null {
-  if (ev.status === "cancelled") return null;
-  if (ev.transparency === "transparent") return null;
-  if (ownDeclined(ev)) return null;
-  const startISO = ev.start?.dateTime;
-  const endISO = ev.end?.dateTime;
-  if (!startISO || !endISO) return null; // all-day or malformed
-  const start = new Date(startISO);
-  const end = new Date(endISO);
-  if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) return null;
-  if (end <= start) return null;
-  return {
-    start,
-    end,
-    calendarEventId: ev.id,
-    isVerdant: isVerdantEvent(ev),
-  };
-}
-
-async function fetchEventsPage(
-  accessToken: string,
-  from: Date,
-  to: Date,
-  pageToken?: string
-): Promise<GoogleEventsListResponse> {
-  const params = new URLSearchParams({
-    timeMin: from.toISOString(),
-    timeMax: to.toISOString(),
-    singleEvents: "true",
-    orderBy: "startTime",
-    maxResults: "250",
-  });
-  if (pageToken) params.set("pageToken", pageToken);
-  const url = `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(
-    CAL_PRIMARY
-  )}/events?${params.toString()}`;
-  const res = await fetch(url, {
-    headers: { Authorization: `Bearer ${accessToken}` },
-  });
-  if (!res.ok) {
-    const body = await res.text();
-    throw new Error(`Calendar list HTTP ${res.status}: ${body.slice(0, 400)}`);
-  }
-  return (await res.json()) as GoogleEventsListResponse;
-}
-
-export interface GetBusyIntervalsOptions {
+export interface GetExternalBusyOptions {
   userId: string;
   accessToken: string | undefined;
   from: Date;
@@ -144,65 +103,177 @@ export interface GetBusyIntervalsOptions {
 }
 
 /**
- * Fetch busy intervals for `userId` between `from` (inclusive) and `to` (exclusive).
+ * Fetch external busy intervals for `userId` on their primary calendar between
+ * `from` (inclusive) and `to` (exclusive).
  *
- * Returns `{ ok, intervals }`. `ok = false` means the calendar read was
- * unavailable (no token, API error, expired credentials). Callers MUST NOT
- * confuse `ok=false` with "no events" — e.g. drift reconciliation should skip
- * when `ok=false` to avoid concluding that every Verdant event was deleted.
+ * Returns `{ ok, intervals }`. `ok = false` means the read was unavailable
+ * (no token, scope denied, API error). Callers MUST NOT confuse this with
+ * "no events" — e.g. the planner should treat ok=false as "trust nothing"
+ * rather than "the user is wide open all week".
  */
-export async function getBusyIntervals(
-  opts: GetBusyIntervalsOptions
+export async function getExternalBusy(
+  opts: GetExternalBusyOptions
 ): Promise<BusyIntervalsResult> {
   const { userId, accessToken, from, to, noCache } = opts;
   if (!accessToken) return { ok: false, intervals: [] };
   if (to <= from) return { ok: true, intervals: [] };
 
-  const key = cacheKey(userId, from, to);
+  const key = cacheKey("freebusy", userId, from, to);
   const now = Date.now();
   if (!noCache) {
-    const hit = cache.get(key);
+    const hit = busyCache.get(key);
     if (hit && hit.expiresAt > now) {
       return { ok: hit.ok, intervals: hit.intervals };
     }
   }
 
-  const intervals: BusyInterval[] = [];
+  try {
+    const res = await fetch(FREEBUSY_URL, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        timeMin: from.toISOString(),
+        timeMax: to.toISOString(),
+        items: [{ id: "primary" }],
+      }),
+    });
+    if (!res.ok) {
+      const body = await res.text();
+      throw new Error(`FreeBusy HTTP ${res.status}: ${body.slice(0, 400)}`);
+    }
+    const j = (await res.json()) as FreeBusyResponse;
+    const cal = j.calendars?.primary;
+    if (cal?.errors && cal.errors.length > 0) {
+      throw new Error(
+        `FreeBusy reported errors on primary: ${cal.errors
+          .map((e) => e.reason ?? "unknown")
+          .join(", ")}`
+      );
+    }
+    const intervals: BusyInterval[] = (cal?.busy ?? [])
+      .map((b) => {
+        const start = new Date(b.start);
+        const end = new Date(b.end);
+        if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) {
+          return null;
+        }
+        if (end <= start) return null;
+        return { start, end };
+      })
+      .filter((b): b is BusyInterval => b !== null)
+      .sort((a, b) => a.start.getTime() - b.start.getTime());
+
+    busyCache.set(key, { expiresAt: now + CACHE_TTL_MS, intervals, ok: true });
+    return { ok: true, intervals };
+  } catch (err) {
+    if (process.env.NODE_ENV !== "production") {
+      console.warn("[getExternalBusy] FreeBusy failed:", err);
+    }
+    busyCache.set(key, { expiresAt: now + CACHE_TTL_MS, intervals: [], ok: false });
+    return { ok: false, intervals: [] };
+  }
+}
+
+export interface GetVerdantEventsOptions {
+  userId: string;
+  accessToken: string | undefined;
+  /** Verdant secondary calendar id (UserPreference.verdantCalendarId). */
+  calendarId: string | null | undefined;
+  from: Date;
+  to: Date;
+  noCache?: boolean;
+}
+
+/**
+ * List events on the Verdant secondary calendar between `from` and `to`.
+ * Used by drift reconciliation.
+ *
+ * If the user hasn't provisioned a Verdant calendar yet (`calendarId` is null
+ * or empty), returns `{ ok: true, events: [] }` — there's nothing to drift
+ * against, so the schedule is unchanged.
+ */
+export async function getVerdantEvents(
+  opts: GetVerdantEventsOptions
+): Promise<VerdantEventsResult> {
+  const { userId, accessToken, calendarId, from, to, noCache } = opts;
+  if (!accessToken) return { ok: false, events: [] };
+  if (!calendarId) return { ok: true, events: [] };
+  if (to <= from) return { ok: true, events: [] };
+
+  const key = cacheKey(`verdant:${calendarId}`, userId, from, to);
+  const now = Date.now();
+  if (!noCache) {
+    const hit = verdantCache.get(key);
+    if (hit && hit.expiresAt > now) {
+      return { ok: hit.ok, events: hit.events };
+    }
+  }
+
+  const events: VerdantEvent[] = [];
   try {
     let pageToken: string | undefined;
     let pages = 0;
     do {
-      const page = await fetchEventsPage(accessToken, from, to, pageToken);
+      const params = new URLSearchParams({
+        timeMin: from.toISOString(),
+        timeMax: to.toISOString(),
+        singleEvents: "true",
+        orderBy: "startTime",
+        maxResults: "250",
+      });
+      if (pageToken) params.set("pageToken", pageToken);
+      const res = await fetch(`${EVENTS_LIST_URL(calendarId)}?${params.toString()}`, {
+        headers: { Authorization: `Bearer ${accessToken}` },
+      });
+      if (!res.ok) {
+        const body = await res.text();
+        throw new Error(
+          `Verdant calendar list HTTP ${res.status}: ${body.slice(0, 400)}`
+        );
+      }
+      const page = (await res.json()) as GoogleEventsListResponse;
       for (const ev of page.items ?? []) {
-        const iv = eventToInterval(ev);
-        if (iv) intervals.push(iv);
+        if (ev.status === "cancelled") continue;
+        const startISO = ev.start?.dateTime;
+        const endISO = ev.end?.dateTime;
+        if (!startISO || !endISO) continue;
+        const start = new Date(startISO);
+        const end = new Date(endISO);
+        if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) continue;
+        if (end <= start) continue;
+        events.push({ start, end, calendarEventId: ev.id });
       }
       pageToken = page.nextPageToken;
       pages++;
     } while (pageToken && pages < 10);
   } catch (err) {
     if (process.env.NODE_ENV !== "production") {
-      console.warn("[getBusyIntervals] calendar read failed:", err);
+      console.warn("[getVerdantEvents] list failed:", err);
     }
-    // Cache the failure briefly so we don't hammer Google when token is bad.
-    cache.set(key, { expiresAt: now + CACHE_TTL_MS, intervals: [], ok: false });
-    return { ok: false, intervals: [] };
+    verdantCache.set(key, { expiresAt: now + CACHE_TTL_MS, events: [], ok: false });
+    return { ok: false, events: [] };
   }
 
-  intervals.sort((a, b) => a.start.getTime() - b.start.getTime());
-  cache.set(key, { expiresAt: now + CACHE_TTL_MS, intervals, ok: true });
-  return { ok: true, intervals };
+  events.sort((a, b) => a.start.getTime() - b.start.getTime());
+  verdantCache.set(key, { expiresAt: now + CACHE_TTL_MS, events, ok: true });
+  return { ok: true, events };
 }
 
-/** Drop cached Google reads for one user (e.g. after “refresh calendar”). */
+/** Drop cached reads for one user (e.g. after "refresh calendar"). */
 export function invalidateBusyIntervalsCacheForUser(userId: string): void {
-  const prefix = `${userId}|`;
-  for (const key of cache.keys()) {
-    if (key.startsWith(prefix)) cache.delete(key);
+  for (const key of busyCache.keys()) {
+    if (key.includes(`|${userId}|`)) busyCache.delete(key);
+  }
+  for (const key of verdantCache.keys()) {
+    if (key.includes(`|${userId}|`)) verdantCache.delete(key);
   }
 }
 
-/** Test/dev helper — clears the in-memory cache. */
+/** Test/dev helper — clears the in-memory caches. */
 export function _clearBusyIntervalsCache(): void {
-  cache.clear();
+  busyCache.clear();
+  verdantCache.clear();
 }

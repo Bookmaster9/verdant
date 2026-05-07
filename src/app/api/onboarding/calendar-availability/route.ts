@@ -10,7 +10,7 @@
  * Output: `{ timeWindows }` matching the TimeWindows shape used everywhere.
  */
 import { auth } from "@/auth";
-import { getBusyIntervals } from "@/lib/calendar-read";
+import { getExternalBusy } from "@/lib/calendar-read";
 import type { TimeWindow, TimeWindows } from "@/types/plan";
 import { NextResponse } from "next/server";
 import { addDays, startOfDay } from "date-fns";
@@ -103,7 +103,7 @@ export async function POST() {
   const from = startOfDay(addDays(now, -LOOKBACK_DAYS));
   const to = startOfDay(addDays(now, 1)); // through end of today
 
-  const calRead = await getBusyIntervals({
+  const calRead = await getExternalBusy({
     userId: s.user.id,
     accessToken,
     from,
@@ -115,9 +115,10 @@ export async function POST() {
       { status: 502 }
     );
   }
-  // Auto-fill should reflect what the user *did with their time*, not what
-  // Verdant has been writing back. Skip Verdant-owned events.
-  const externalBusy = calRead.intervals.filter((b) => !b.isVerdant);
+  // FreeBusy on primary already excludes Verdant-owned events (they live on
+  // the secondary calendar), so the auto-fill reflects what the user *did
+  // with their time* without any extra filtering.
+  const externalBusy = calRead.intervals;
 
   const startMin = REASONABLE_START_HOUR * 60;
   const endMin = REASONABLE_END_HOUR * 60;

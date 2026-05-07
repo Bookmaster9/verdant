@@ -37,18 +37,12 @@ export function parseBlackouts(json: string): ManualBlackout[] {
 
 export function blackoutsToBusy(blackouts: ManualBlackout[]): BusyInterval[] {
   const out: BusyInterval[] = [];
-  let i = 0;
   for (const b of blackouts) {
     const from = startOfDay(parseISO(b.from));
     const to = addDays(startOfDay(parseISO(b.to)), 1);
     if (Number.isNaN(from.getTime()) || Number.isNaN(to.getTime())) continue;
     if (to <= from) continue;
-    out.push({
-      start: from,
-      end: to,
-      calendarEventId: `blackout-${i++}`,
-      isVerdant: false,
-    });
+    out.push({ start: from, end: to });
   }
   return out;
 }

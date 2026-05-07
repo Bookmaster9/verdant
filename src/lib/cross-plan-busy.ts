@@ -41,7 +41,7 @@ export async function loadCrossPlanBusy(args: {
         ? { id: { not: args.excludePlanId } }
         : {}),
     },
-    select: { id: true, scheduleJson: true },
+    select: { scheduleJson: true },
   });
 
   const busy: BusyInterval[] = [];
@@ -52,12 +52,7 @@ export async function loadCrossPlanBusy(args: {
     for (const sess of sessions) {
       const start = new Date(sess.start);
       const end = new Date(sess.end);
-      busy.push({
-        start,
-        end,
-        calendarEventId: sess.calendarEventId ?? `verdant-${p.id}-${sess.id}`,
-        isVerdant: true,
-      });
+      busy.push({ start, end });
       const k = start.toISOString().slice(0, 10);
       const minutes = Math.max(0, (end.getTime() - start.getTime()) / 60_000);
       initialDailyMinutesUsed.set(

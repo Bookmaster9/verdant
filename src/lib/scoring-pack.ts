@@ -394,8 +394,6 @@ export function packIntoExistingSchedule(args: {
   const existingAsBusy: BusyInterval[] = args.existingSchedule.map((sess) => ({
     start: new Date(sess.start),
     end: new Date(sess.end),
-    calendarEventId: sess.calendarEventId ?? `verdant-${sess.id}`,
-    isVerdant: true,
   }));
 
   // Per-day minutes already consumed by existing entries. Sum each entry's
@@ -473,12 +471,7 @@ export function packWithScoring(
       }
     }
     placedById.set(task.id, { task, start: best.start, end: best.end });
-    placedBusy.push({
-      start: best.start,
-      end: best.end,
-      calendarEventId: `placed-${task.id}`,
-      isVerdant: false,
-    });
+    placedBusy.push({ start: best.start, end: best.end });
     const k = dayKey(best.start);
     dailyMinutesUsed.set(
       k,

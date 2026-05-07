@@ -2,7 +2,7 @@ import type { LearningPlan } from "@prisma/client";
 import { prisma } from "@/lib/db";
 import { ensureUserPreferences } from "@/lib/user";
 import { parseTimeWindowsJson } from "@/lib/default-preferences";
-import { getBusyIntervals } from "@/lib/calendar-read";
+import { getExternalBusy } from "@/lib/calendar-read";
 import { parseBlackouts, blackoutsToBusy } from "@/lib/blackouts";
 import {
   compileForbidRulesToBusy,
@@ -122,7 +122,7 @@ export async function applyTaskFeedback(args: {
   /** Lazy load the things needed to place a new entry; cached across calls. */
   let _ctx: {
     timeWindows: ReturnType<typeof parseTimeWindowsJson>;
-    externalBusy: Awaited<ReturnType<typeof getBusyIntervals>>["intervals"];
+    externalBusy: Awaited<ReturnType<typeof getExternalBusy>>["intervals"];
     blackoutBusy: ReturnType<typeof blackoutsToBusy>;
     forbidBusy: ReturnType<typeof compileForbidRulesToBusy>;
     deadlinePlus1: Date;
@@ -139,7 +139,7 @@ export async function applyTaskFeedback(args: {
     if (_ctx) return _ctx;
     const [pref, calRead, crossPlan] = await Promise.all([
       ensureUserPreferences(userId),
-      getBusyIntervals({
+      getExternalBusy({
         userId,
         accessToken,
         from: now,
@@ -148,7 +148,7 @@ export async function applyTaskFeedback(args: {
       loadCrossPlanBusy({ userId, excludePlanId: planId }),
     ]);
     const tw = parseTimeWindowsJson(pref.timeWindows);
-    const externalBusy = calRead.intervals.filter((b) => !b.isVerdant);
+    const externalBusy = calRead.intervals;
     const blackoutBusy = blackoutsToBusy(parseBlackouts(plan.manualBlackouts));
     const slotEffectiveness = JSON.parse(
       pref.slotEffectiveness || "{}"
@@ -361,7 +361,7 @@ async function advanceFsrsAndPlaceNewReviews(args: {
   schedule: ScheduledSession[];
   ctxLoader: () => Promise<{
     timeWindows: ReturnType<typeof parseTimeWindowsJson>;
-    externalBusy: Awaited<ReturnType<typeof getBusyIntervals>>["intervals"];
+    externalBusy: Awaited<ReturnType<typeof getExternalBusy>>["intervals"];
     blackoutBusy: ReturnType<typeof blackoutsToBusy>;
     forbidBusy: ReturnType<typeof compileForbidRulesToBusy>;
     deadlinePlus1: Date;

@@ -182,9 +182,7 @@ export function applyEditOps(
   schedule = pinResult.schedule;
   for (const rule of rules) {
     if (rule.kind === "pin") {
-      const found = pinResult.pinned.some(
-        (p) => p.calendarEventId === `pin-${rule.sessionId}`
-      );
+      const found = pinResult.pinnedSessionIds.has(rule.sessionId);
       appliedOps.push({
         kind: "pin",
         ok: found,
@@ -232,8 +230,6 @@ export function applyEditOps(
     const lockedAsBusy: BusyInterval[] = lockedFuture.map((s) => ({
       start: parseISO(s.start),
       end: parseISO(s.end),
-      calendarEventId: s.calendarEventId ?? `verdant-locked-${s.id}`,
-      isVerdant: true,
     }));
     const blackoutBusy = blackoutsToBusy(manualBlackouts);
     const forbidBusy = compileForbidRulesToBusy(effectiveRules, {

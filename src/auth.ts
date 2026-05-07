@@ -9,6 +9,51 @@ interface RefreshedTokens {
   refresh_token?: string;
 }
 
+const SCOPE_APP_CREATED =
+  "https://www.googleapis.com/auth/calendar.app.created";
+const SCOPE_FREEBUSY =
+  "https://www.googleapis.com/auth/calendar.events.freebusy";
+
+/**
+ * Inspect the OAuth-granted scope string and return a flag for the dashboard
+ * "reconnect Google" banner. `null` = both scopes present (no problem).
+ */
+function classifyScopeIssue(
+  scope: string | undefined
+): "freebusy-denied" | "app-created-denied" | "both-denied" | null {
+  const set = new Set((scope ?? "").split(/\s+/).filter(Boolean));
+  const hasApp = set.has(SCOPE_APP_CREATED);
+  const hasFb = set.has(SCOPE_FREEBUSY);
+  if (hasApp && hasFb) return null;
+  if (!hasApp && !hasFb) return "both-denied";
+  if (!hasApp) return "app-created-denied";
+  return "freebusy-denied";
+}
+
+async function persistScopeIssue(
+  userId: string,
+  issue: "freebusy-denied" | "app-created-denied" | "both-denied" | null
+): Promise<void> {
+  try {
+    await prisma.userPreference.upsert({
+      where: { userId },
+      create: {
+        userId,
+        timeWindows: JSON.stringify({}),
+        calendarScopeIssue: issue,
+        // New users have nothing to clean up — set the epoch sentinel so the
+        // legacy-events banner stays suppressed.
+        legacyVerdantEventsAckAt: new Date(0),
+      },
+      update: { calendarScopeIssue: issue },
+    });
+  } catch (err) {
+    if (process.env.NODE_ENV !== "production") {
+      console.warn("[auth] persistScopeIssue failed:", err);
+    }
+  }
+}
+
 async function refreshGoogleAccessToken(refreshToken: string): Promise<RefreshedTokens> {
   const res = await fetch("https://oauth2.googleapis.com/token", {
     method: "POST",
@@ -42,6 +87,15 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
         token.expiresAt = account.expires_at; // seconds since epoch
         token.id = profile?.sub;
         token.refreshError = undefined;
+        // Detect granted scopes once at sign-in. If the user denied either of
+        // the two calendar scopes via Google's granular consent UI, surface a
+        // dashboard banner; otherwise clear any previous issue.
+        const issue = classifyScopeIssue(account.scope);
+        const userId = profile?.sub;
+        if (userId) {
+          // Best-effort — don't block sign-in on a write failure.
+          await persistScopeIssue(userId, issue);
+        }
         return token;
       }
 

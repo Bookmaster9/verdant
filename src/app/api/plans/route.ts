@@ -4,7 +4,7 @@ import { insertOrSkip } from "@/lib/google-calendar";
 import { prisma } from "@/lib/db";
 import { ensureUserPreferences } from "@/lib/user";
 import { packWithScoring } from "@/lib/scoring-pack";
-import { getBusyIntervals } from "@/lib/calendar-read";
+import { getExternalBusy } from "@/lib/calendar-read";
 import { loadCrossPlanBusy } from "@/lib/cross-plan-busy";
 import { summarizeAvailability } from "@/lib/availability-summary";
 import { seedFsrsForPlan } from "@/lib/fsrs";
@@ -113,7 +113,7 @@ export async function POST(request: Request) {
         const [crossPlan, pref, busyResult] = await Promise.all([
           loadCrossPlanBusy({ userId, excludePlanId: null }),
           ensureUserPreferences(userId),
-          getBusyIntervals({
+          getExternalBusy({
             userId,
             accessToken,
             from: startDate,
@@ -127,7 +127,7 @@ export async function POST(request: Request) {
         const slotEffectiveness = JSON.parse(
           pref.slotEffectiveness || "{}"
         ) as Record<string, number>;
-        const externalBusy = busyResult.intervals.filter((b) => !b.isVerdant);
+        const externalBusy = busyResult.intervals;
 
         const days = Math.max(
           1,
@@ -362,7 +362,7 @@ export async function POST(request: Request) {
             const tBg = Date.now();
             try {
               const synced = await Promise.all(
-                schedule.map((sess) => insertOrSkip(accessToken, sess))
+                schedule.map((sess) => insertOrSkip(userId, accessToken, sess))
               );
               await prisma.learningPlan.update({
                 where: { id: planId },

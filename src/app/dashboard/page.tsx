@@ -13,11 +13,16 @@ import {
   startOfDay,
   addDays,
 } from "date-fns";
-import { getBusyIntervals } from "@/lib/calendar-read";
+import { getExternalBusy } from "@/lib/calendar-read";
 import { Sprout, CalendarIcon } from "@/components/verdant/art";
 import type { TimelineEvent } from "@/components/verdant/TodayTimeline";
 import { DashboardTimelinePanel } from "@/components/verdant/DashboardTimelinePanel";
 import { CalendarRefreshButton } from "@/components/verdant/CalendarRefreshButton";
+import {
+  LegacyEventsBanner,
+  ScopeIssueBanner,
+} from "@/components/verdant/CalendarMigrationBanner";
+import { Greeting } from "@/components/verdant/Greeting";
 import { displayTitle } from "@/lib/phase";
 import {
   SproutGrid,
@@ -86,7 +91,7 @@ export default async function DashboardPage() {
       orderBy: { createdAt: "desc" },
     }),
     ensureUserPreferences(s.user.id),
-    getBusyIntervals({
+    getExternalBusy({
       userId: s.user.id,
       accessToken: s.accessToken,
       from: todayStart,
@@ -97,9 +102,13 @@ export default async function DashboardPage() {
 
   // No active sprouts: keep the welcome state from before.
   if (plans.length === 0) {
+    const showLegacyBannerEmpty = pref.legacyVerdantEventsAckAt === null;
+    const scopeIssueEmpty = pref.calendarScopeIssue ?? null;
     return (
       <Shell>
         <div style={{ padding: "12px 36px 60px" }}>
+          {scopeIssueEmpty && <ScopeIssueBanner issue={scopeIssueEmpty} />}
+          {showLegacyBannerEmpty && <LegacyEventsBanner />}
           <div className="tag">welcome</div>
           <h1
             className="serif-display"
@@ -110,11 +119,7 @@ export default async function DashboardPage() {
               letterSpacing: "-0.02em",
             }}
           >
-            Good morning,{" "}
-            <span style={{ fontStyle: "italic", color: "var(--moss-deep)" }}>
-              {s.user.name?.split(" ")[0] || "friend"}
-            </span>
-            .
+            <Greeting name={s.user.name?.split(" ")[0] || "friend"} />
           </h1>
           <p
             className="hand"
@@ -258,14 +263,15 @@ export default async function DashboardPage() {
   }
 
   // External Google Calendar meetings (same source as the schedule week grid).
+  // FreeBusy already excludes Verdant-owned events, so no filter needed.
+  let extCounter = 0;
   for (const iv of busyToday.intervals) {
-    if (iv.isVerdant) continue;
     const todayClip = clipToToday(iv.start, iv.end, now);
     if (!todayClip) continue;
     const band = clipToTimelineBand(todayClip.start, todayClip.end);
     if (!band) continue;
     events.push({
-      id: `gcal-${iv.calendarEventId}`,
+      id: `gcal-${extCounter++}`,
       title: "Calendar event",
       type: "ext",
       start: format(band.start, "HH:mm"),
@@ -287,9 +293,14 @@ export default async function DashboardPage() {
   const dayLabels = ["M", "T", "W", "T", "F", "S", "S"];
   const niceDay = format(now, "EEEE, MMMM d");
 
+  const showLegacyBanner = pref.legacyVerdantEventsAckAt === null;
+  const scopeIssue = pref.calendarScopeIssue ?? null;
+
   return (
     <Shell>
       <div style={{ padding: "12px 36px 60px" }}>
+        {scopeIssue && <ScopeIssueBanner issue={scopeIssue} />}
+        {showLegacyBanner && <LegacyEventsBanner />}
         <div
           style={{
             display: "grid",
@@ -310,11 +321,7 @@ export default async function DashboardPage() {
                 letterSpacing: "-0.02em",
               }}
             >
-              Good morning,{" "}
-              <span style={{ fontStyle: "italic", color: "var(--moss-deep)" }}>
-                {s.user.name?.split(" ")[0] || "friend"}
-              </span>
-              .
+              <Greeting name={s.user.name?.split(" ")[0] || "friend"} />
             </h1>
             <p
               className="hand"

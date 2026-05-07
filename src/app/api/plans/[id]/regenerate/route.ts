@@ -2,7 +2,7 @@ import { auth } from "@/auth";
 import { prisma } from "@/lib/db";
 import { ensureUserPreferences } from "@/lib/user";
 import { generatePlanWithAI } from "@/lib/generate-sprout";
-import { getBusyIntervals } from "@/lib/calendar-read";
+import { getExternalBusy } from "@/lib/calendar-read";
 import { summarizeAvailability } from "@/lib/availability-summary";
 import { packWithScoring } from "@/lib/scoring-pack";
 import { parseBlackouts, blackoutsToBusy } from "@/lib/blackouts";
@@ -74,13 +74,13 @@ export async function POST(request: Request, { params }: RouteParams) {
   const startDate = new Date();
   const deadline = new Date(plan.deadline.getTime() + 864e5);
 
-  const busyRead = await getBusyIntervals({
+  const busyRead = await getExternalBusy({
     userId: s.user.id,
     accessToken: s.accessToken,
     from: startDate,
     to: deadline,
   });
-  const externalBusy = busyRead.intervals.filter((b) => !b.isVerdant);
+  const externalBusy = busyRead.intervals;
   const blackoutBusy = blackoutsToBusy(parseBlackouts(plan.manualBlackouts));
 
   let nextPlanJson: string;
@@ -156,8 +156,6 @@ export async function POST(request: Request, { params }: RouteParams) {
   const lockedAsBusy = lockedFuture.map((sess) => ({
     start: new Date(sess.start),
     end: new Date(sess.end),
-    calendarEventId: sess.calendarEventId ?? `verdant-locked-${sess.id}`,
-    isVerdant: true,
   }));
 
   const persistentRules = parsePlacementRules(plan.placementRules);

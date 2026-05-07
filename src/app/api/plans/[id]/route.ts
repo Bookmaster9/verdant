@@ -2,7 +2,7 @@ import { auth } from "@/auth";
 import { prisma } from "@/lib/db";
 import { ensureUserPreferences } from "@/lib/user";
 import { rescheduleUncompleted } from "@/lib/time-windows";
-import { getBusyIntervals } from "@/lib/calendar-read";
+import { getExternalBusy } from "@/lib/calendar-read";
 import { loadPlanState } from "@/lib/load-plan-state";
 import { parseBlackouts, blackoutsToBusy, type ManualBlackout } from "@/lib/blackouts";
 import { interpretEdit, placementRuleSchema } from "@/lib/edit-plan";
@@ -160,7 +160,7 @@ export async function PATCH(request: Request, { params }: RouteParams) {
       number
     >;
     const [calRead, crossPlan] = await Promise.all([
-      getBusyIntervals({
+      getExternalBusy({
         userId: s.user.id,
         accessToken: s.accessToken,
         from: now,
@@ -168,7 +168,7 @@ export async function PATCH(request: Request, { params }: RouteParams) {
       }),
       loadCrossPlanBusy({ userId: s.user.id, excludePlanId: id }),
     ]);
-    const externalBusy = calRead.intervals.filter((b) => !b.isVerdant);
+    const externalBusy = calRead.intervals;
     const persistentRules = parsePlacementRules(plan.placementRules);
     const projectedReviews = await loadProjectedReviewTasks({
       planId: id,
@@ -229,7 +229,7 @@ export async function PATCH(request: Request, { params }: RouteParams) {
     const sproutPlan = JSON.parse(plan.planJson || "{}") as SproutPlan;
     const now = new Date();
     const [calRead, crossPlan] = await Promise.all([
-      getBusyIntervals({
+      getExternalBusy({
         userId: s.user.id,
         accessToken: s.accessToken,
         from: now,
@@ -237,7 +237,7 @@ export async function PATCH(request: Request, { params }: RouteParams) {
       }),
       loadCrossPlanBusy({ userId: s.user.id, excludePlanId: id }),
     ]);
-    const externalBusy = calRead.intervals.filter((b) => !b.isVerdant);
+    const externalBusy = calRead.intervals;
     const newRules = p.data.placementRules as PlacementRule[];
     const deadlinePlus1 = new Date(plan.deadline.getTime() + 864e5);
     const past = sessions.filter((sess) => new Date(sess.end) < now);
@@ -261,8 +261,6 @@ export async function PATCH(request: Request, { params }: RouteParams) {
     const lockedAsBusy = lockedFuture.map((sess) => ({
       start: new Date(sess.start),
       end: new Date(sess.end),
-      calendarEventId: sess.calendarEventId ?? `verdant-locked-${sess.id}`,
-      isVerdant: true,
     }));
     const blackoutBusy = blackoutsToBusy(parseBlackouts(plan.manualBlackouts));
     const forbidBusy = compileForbidRulesToBusy(newRules, {
@@ -304,7 +302,7 @@ export async function PATCH(request: Request, { params }: RouteParams) {
       const sessions = JSON.parse(outSchedule || "[]") as ScheduledSession[];
       const from = new Date();
       const [calRead, crossPlan] = await Promise.all([
-        getBusyIntervals({
+        getExternalBusy({
           userId: s.user.id,
           accessToken: s.accessToken,
           from,
@@ -312,7 +310,7 @@ export async function PATCH(request: Request, { params }: RouteParams) {
         }),
         loadCrossPlanBusy({ userId: s.user.id, excludePlanId: id }),
       ]);
-      const externalBusy = calRead.intervals.filter((b) => !b.isVerdant);
+      const externalBusy = calRead.intervals;
       const blackoutBusy = blackoutsToBusy(p.data.manualBlackouts as ManualBlackout[]);
       const rescheduled = rescheduleUncompleted(
         sessions,
@@ -331,7 +329,7 @@ export async function PATCH(request: Request, { params }: RouteParams) {
     const sessions = JSON.parse(outSchedule || "[]") as ScheduledSession[];
     const from = new Date(p.data.rescheduleFrom);
     const [busyRead, crossPlan] = await Promise.all([
-      getBusyIntervals({
+      getExternalBusy({
         userId: s.user.id,
         accessToken: s.accessToken,
         from,
@@ -339,7 +337,7 @@ export async function PATCH(request: Request, { params }: RouteParams) {
       }),
       loadCrossPlanBusy({ userId: s.user.id, excludePlanId: id }),
     ]);
-    const externalBusy = busyRead.intervals.filter((b) => !b.isVerdant);
+    const externalBusy = busyRead.intervals;
     const blackoutsJson = outManualBlackouts ?? plan.manualBlackouts;
     const blackoutBusy = blackoutsToBusy(parseBlackouts(blackoutsJson || "[]"));
     const rescheduled = rescheduleUncompleted(
@@ -384,7 +382,7 @@ export async function PATCH(request: Request, { params }: RouteParams) {
     ];
 
     const [calRead, crossPlan] = await Promise.all([
-      getBusyIntervals({
+      getExternalBusy({
         userId: s.user.id,
         accessToken: s.accessToken,
         from: now,
@@ -392,12 +390,10 @@ export async function PATCH(request: Request, { params }: RouteParams) {
       }),
       loadCrossPlanBusy({ userId: s.user.id, excludePlanId: id }),
     ]);
-    const externalBusy = calRead.intervals.filter((b) => !b.isVerdant);
+    const externalBusy = calRead.intervals;
     const lockedAsBusy = lockedFuture.map((sess) => ({
       start: new Date(sess.start),
       end: new Date(sess.end),
-      calendarEventId: sess.calendarEventId ?? `verdant-locked-${sess.id}`,
-      isVerdant: true,
     }));
     const blackoutBusy = blackoutsToBusy(parseBlackouts(plan.manualBlackouts));
     const persistentRules = parsePlacementRules(plan.placementRules);

@@ -1,7 +1,7 @@
 import { auth } from "@/auth";
 import { Shell } from "@/components/Shell";
 import { prisma } from "@/lib/db";
-import { getBusyIntervals } from "@/lib/calendar-read";
+import { getExternalBusy } from "@/lib/calendar-read";
 import { ensureUserPreferences } from "@/lib/user";
 import { redirect } from "next/navigation";
 import { format, addDays, parseISO, startOfWeek } from "date-fns";
@@ -74,8 +74,10 @@ export default async function SchedulePage({
   monday.setHours(0, 0, 0, 0);
   const sunday = addDays(monday, 7);
 
-  // Busy intervals across the visible week (whole-day window).
-  const busy = await getBusyIntervals({
+  // External busy intervals across the visible week (whole-day window).
+  // Verdant sessions are sourced separately from `plan.scheduleJson`; the
+  // FreeBusy read on primary already excludes them.
+  const busy = await getExternalBusy({
     userId: s.user.id,
     accessToken: s.accessToken,
     from: monday,
@@ -121,10 +123,11 @@ export default async function SchedulePage({
     }
   }
 
-  // External (non-Verdant) busy events for the week.
+  // External (non-Verdant) busy events for the week. FreeBusy on primary
+  // returns only intervals — no titles or ids — and already excludes events
+  // on the Verdant secondary calendar.
   const external: ExternalBlock[] = [];
   for (const iv of busy.intervals) {
-    if (iv.isVerdant) continue; // already shown via verdant lane
     if (iv.start < monday || iv.start >= sunday) continue;
     const clamped = clampToVisible(iv.start, iv.end);
     if (!clamped) continue;

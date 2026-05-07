@@ -2,7 +2,7 @@ import { auth } from "@/auth";
 import { prisma } from "@/lib/db";
 import { ensureUserPreferences } from "@/lib/user";
 import { parseTimeWindowsJson } from "@/lib/default-preferences";
-import { getBusyIntervals } from "@/lib/calendar-read";
+import { getExternalBusy } from "@/lib/calendar-read";
 import { parseBlackouts, blackoutsToBusy } from "@/lib/blackouts";
 import {
   compileForbidRulesToBusy,
@@ -67,7 +67,7 @@ export async function POST(request: Request, { params }: RouteParams) {
 
   const [pref, calRead, crossPlan] = await Promise.all([
     ensureUserPreferences(s.user.id),
-    getBusyIntervals({
+    getExternalBusy({
       userId: s.user.id,
       accessToken: s.accessToken,
       from: now,
@@ -79,7 +79,7 @@ export async function POST(request: Request, { params }: RouteParams) {
   const slotEffectiveness = JSON.parse(
     pref.slotEffectiveness || "{}"
   ) as Record<string, number>;
-  const externalBusy = calRead.intervals.filter((b) => !b.isVerdant);
+  const externalBusy = calRead.intervals;
   const blackoutBusy = blackoutsToBusy(parseBlackouts(plan.manualBlackouts));
   const persistentRules = parsePlacementRules(plan.placementRules);
   const forbidBusy = compileForbidRulesToBusy(persistentRules, {

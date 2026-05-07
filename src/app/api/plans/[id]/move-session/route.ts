@@ -114,6 +114,7 @@ export async function POST(request: Request, { params }: RouteParams) {
 
   // Update Google Calendar after the response is sent.
   const accessToken = s.accessToken;
+  const userId = s.user.id;
   if (accessToken && previousCalendarEventId) {
     after(async () => {
       const movedSession: ScheduledSession = {
@@ -124,7 +125,7 @@ export async function POST(request: Request, { params }: RouteParams) {
         calendarEventId: previousCalendarEventId,
       };
       try {
-        await updateSessionInGoogle(accessToken, movedSession);
+        await updateSessionInGoogle(userId, accessToken, movedSession);
         // Mark synced=true once Google confirms.
         const fresh = await prisma.learningPlan.findUnique({ where: { id } });
         if (!fresh) return;

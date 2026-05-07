@@ -2,7 +2,7 @@ import { auth } from "@/auth";
 import { prisma } from "@/lib/db";
 import { ensureUserPreferences } from "@/lib/user";
 import { parseTimeWindowsJson } from "@/lib/default-preferences";
-import { getBusyIntervals, type BusyInterval } from "@/lib/calendar-read";
+import { getExternalBusy, type BusyInterval } from "@/lib/calendar-read";
 import { loadCrossPlanBusy } from "@/lib/cross-plan-busy";
 import { parseBlackouts, blackoutsToBusy } from "@/lib/blackouts";
 import { dedupeScheduleById, packWithScoring } from "@/lib/scoring-pack";
@@ -32,8 +32,6 @@ function sessionsToVerdantBusy(
     .map((sess) => ({
       start: new Date(sess.start),
       end: new Date(sess.end),
-      calendarEventId: sess.calendarEventId ?? `verdant-${sess.id}`,
-      isVerdant: true,
     }));
 }
 
@@ -78,7 +76,7 @@ async function repackAfterRemovingSession(
   ];
 
   const [calRead, crossPlan] = await Promise.all([
-    getBusyIntervals({
+    getExternalBusy({
       userId,
       accessToken,
       from: now,
@@ -86,12 +84,10 @@ async function repackAfterRemovingSession(
     }),
     loadCrossPlanBusy({ userId, excludePlanId: planId }),
   ]);
-  const externalBusy = calRead.intervals.filter((b) => !b.isVerdant);
+  const externalBusy = calRead.intervals;
   const lockedAsBusy = lockedFuture.map((sess) => ({
     start: new Date(sess.start),
     end: new Date(sess.end),
-    calendarEventId: sess.calendarEventId ?? `verdant-locked-${sess.id}`,
-    isVerdant: true,
   }));
   const blackoutBusy = blackoutsToBusy(
     parseBlackouts(plan.manualBlackouts ?? "[]")
@@ -164,7 +160,7 @@ export async function POST(request: Request, { params }: RouteParams) {
 
   if (action === "move_to_next_free") {
     const [calRead, crossPlan] = await Promise.all([
-      getBusyIntervals({
+      getExternalBusy({
         userId: s.user.id,
         accessToken: s.accessToken,
         from: now,
@@ -173,7 +169,7 @@ export async function POST(request: Request, { params }: RouteParams) {
       }),
       loadCrossPlanBusy({ userId: s.user.id, excludePlanId: id }),
     ]);
-    const externalBusy = calRead.intervals.filter((b) => !b.isVerdant);
+    const externalBusy = calRead.intervals;
     const blackoutBusy = blackoutsToBusy(
       parseBlackouts(plan.manualBlackouts ?? "[]")
     );
@@ -232,6 +228,7 @@ export async function POST(request: Request, { params }: RouteParams) {
     });
 
     const accessToken = s.accessToken;
+    const userId = s.user.id;
     if (accessToken && prevEventId) {
       const moved: ScheduledSession = {
         ...target,
@@ -242,7 +239,7 @@ export async function POST(request: Request, { params }: RouteParams) {
       };
       runAfter(async () => {
         try {
-          await updateSessionInGoogle(accessToken, moved);
+          await updateSessionInGoogle(userId, accessToken, moved);
           const fresh = await prisma.learningPlan.findUnique({ where: { id } });
           if (!fresh) return;
           const list = JSON.parse(

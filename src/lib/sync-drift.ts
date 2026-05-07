@@ -1,5 +1,5 @@
 /**
- * Two-way sync drift reconciliation (design Q8).
+ * Two-way sync drift reconciliation.
  *
  * When the user moves or deletes a Verdant-synced event inside Google Calendar,
  * the live calendar disagrees with our `scheduleJson`. This module reconciles:
@@ -11,9 +11,13 @@
  *         survives so phase totals don't shift; user can re-run reschedule.
  *
  * No prompts. The UI surfaces these as informational toasts.
+ *
+ * After the calendar-scope migration, the live truth comes from
+ * `getVerdantEvents` (events on the secondary calendar) rather than from a
+ * filtered busy list — every event on that calendar is by definition Verdant.
  */
 import type { ScheduledSession } from "@/types/plan";
-import type { BusyInterval } from "@/lib/calendar-read";
+import type { VerdantEvent } from "@/lib/calendar-read";
 
 export interface DriftResult {
   schedule: ScheduledSession[];
@@ -30,20 +34,16 @@ function isoDiffer(a: string, b: Date): boolean {
 }
 
 /**
- * Reconcile `schedule` against the live Verdant-owned events from the calendar.
- *
- * @param schedule  Stored sessions (from `plan.scheduleJson`).
- * @param busy      All busy intervals from `getBusyIntervals`. Verdant entries
- *                  (where `isVerdant === true`) are treated as the live truth
- *                  for already-synced sessions.
+ * Reconcile `schedule` against the live Verdant-owned events from the
+ * secondary calendar.
  */
 export function reconcileDrift(
   schedule: ScheduledSession[],
-  busy: BusyInterval[]
+  verdantEvents: VerdantEvent[]
 ): DriftResult {
-  const verdantById = new Map<string, BusyInterval>();
-  for (const b of busy) {
-    if (b.isVerdant) verdantById.set(b.calendarEventId, b);
+  const liveById = new Map<string, VerdantEvent>();
+  for (const ev of verdantEvents) {
+    liveById.set(ev.calendarEventId, ev);
   }
 
   const adoptedIds: string[] = [];
@@ -55,7 +55,7 @@ export function reconcileDrift(
       out.push(sess);
       continue;
     }
-    const live = verdantById.get(sess.calendarEventId);
+    const live = liveById.get(sess.calendarEventId);
     if (!live) {
       removedIds.push(sess.id);
       continue;

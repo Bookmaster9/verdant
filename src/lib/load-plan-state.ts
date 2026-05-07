@@ -5,7 +5,7 @@
  * identical state.
  */
 import { prisma } from "@/lib/db";
-import { getBusyIntervals } from "@/lib/calendar-read";
+import { getExternalBusy, getVerdantEvents } from "@/lib/calendar-read";
 import { reconcileDrift, type DriftResult } from "@/lib/sync-drift";
 import { findConflicts, type ConflictReport } from "@/lib/conflicts";
 import { parseBlackouts, blackoutsToBusy } from "@/lib/blackouts";
@@ -47,9 +47,27 @@ export async function loadPlanState(args: {
   });
 
   const { from, to } = calendarWindow(plan);
-  const calendarRead = await getBusyIntervals({ userId, accessToken, from, to });
+
+  // Two reads: external busy from FreeBusy on primary (planner / conflict
+  // detection) and Verdant events from the secondary calendar (drift). The
+  // calendar id is stored on the user's preferences; if not yet provisioned,
+  // getVerdantEvents short-circuits to ok=true with zero events.
+  const pref = await prisma.userPreference.findUnique({
+    where: { userId },
+    select: { verdantCalendarId: true },
+  });
+  const [externalRead, verdantRead] = await Promise.all([
+    getExternalBusy({ userId, accessToken, from, to }),
+    getVerdantEvents({
+      userId,
+      accessToken,
+      calendarId: pref?.verdantCalendarId ?? null,
+      from,
+      to,
+    }),
+  ]);
   const blackoutBusy = blackoutsToBusy(parseBlackouts(plan.manualBlackouts));
-  const busy = [...calendarRead.intervals, ...blackoutBusy];
+  const externalBusy = [...externalRead.intervals, ...blackoutBusy];
 
   // Defensive dedup-on-read: if any prior write left the persisted scheduleJson
   // with duplicate session ids (collision in `sess-${taskId}` after a merge),
@@ -58,19 +76,19 @@ export async function loadPlanState(args: {
   const stored = dedupeScheduleById(
     JSON.parse(plan.scheduleJson || "[]") as ScheduledSession[]
   );
-  // CRITICAL: only reconcile drift when the calendar fetch actually succeeded.
-  // If the access token is expired / API is off, we'd otherwise see zero
-  // Verdant events and conclude every synced session was deleted, wiping the
-  // schedule. Skip reconcile entirely on read failure.
-  const drift = calendarRead.ok
-    ? reconcileDrift(stored, calendarRead.intervals)
+  // CRITICAL: only reconcile drift when the Verdant calendar fetch actually
+  // succeeded. If the access token is expired / scope denied / API is off,
+  // we'd otherwise see zero Verdant events and conclude every synced session
+  // was deleted, wiping the schedule. Skip reconcile entirely on read failure.
+  const drift = verdantRead.ok
+    ? reconcileDrift(stored, verdantRead.events)
     : { schedule: stored, adoptedIds: [], removedIds: [] };
-  const conflicts = calendarRead.ok
-    ? findConflicts(drift.schedule, busy)
+  const conflicts = externalRead.ok
+    ? findConflicts(drift.schedule, externalBusy)
     : { lockedConflicts: [], unlockedConflictIds: [] };
 
   let effectivePlan = plan;
-  if (calendarRead.ok && (drift.adoptedIds.length > 0 || drift.removedIds.length > 0)) {
+  if (verdantRead.ok && (drift.adoptedIds.length > 0 || drift.removedIds.length > 0)) {
     const updated = await prisma.learningPlan.update({
       where: { id: planId },
       data: { scheduleJson: JSON.stringify(drift.schedule) },

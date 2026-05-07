@@ -265,8 +265,6 @@ export function rescheduleUncompleted(
   const lockedAsBusy: BusyInterval[] = lockedFuture.map((s) => ({
     start: new Date(s.start),
     end: new Date(s.end),
-    calendarEventId: s.calendarEventId ?? `verdant-locked-${s.id}`,
-    isVerdant: true,
   }));
 
   const tasks = unlockedFuture.flatMap((s) => {

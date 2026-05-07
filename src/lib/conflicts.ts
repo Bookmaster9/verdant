@@ -1,12 +1,16 @@
 /**
  * Conflict detection between Verdant sessions and *external* calendar busy
- * (design Q6, option iii).
+ * intervals.
  *
  *   - Locked sessions that collide with external events → surfaced as a banner;
  *     user picks "Unlock & reschedule" or "Keep here". Not auto-moved.
  *   - Unlocked sessions that collide → eligible for the auto-reschedule pass
  *     called by the same refresh path. Caller is expected to drop these from
  *     the schedule and re-pack the underlying tasks.
+ *
+ * Post-scope-migration: callers pass busy intervals that are guaranteed
+ * external (FreeBusy on primary doesn't see Verdant's secondary calendar),
+ * so this module no longer filters by an `isVerdant` tag.
  */
 import type { ScheduledSession } from "@/types/plan";
 import type { BusyInterval } from "@/lib/calendar-read";
@@ -33,9 +37,8 @@ function overlaps(
 
 export function findConflicts(
   schedule: ScheduledSession[],
-  busy: BusyInterval[]
+  external: BusyInterval[]
 ): ConflictReport {
-  const external = busy.filter((b) => !b.isVerdant);
   const lockedConflicts: SessionConflict[] = [];
   const unlockedConflictIds: string[] = [];
 

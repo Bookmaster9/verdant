@@ -78,6 +78,19 @@ model UserPreference {
   /// Null = first-time user; the modal will gate /plan/new until set.
   onboardedAt        DateTime?
 
+  /// Google Calendar id of the secondary "Verdant" calendar created via the
+  /// calendar.app.created scope. Null = not yet created. Lazy-provisioned on
+  /// the first push attempt; cleared (then recreated) on 404 from Google.
+  verdantCalendarId  String?
+  /// Last seen Google scope problem after OAuth. One of:
+  ///   "freebusy-denied" | "app-created-denied" | "both-denied" | null.
+  /// When non-null the dashboard surfaces a "reconnect Google" banner.
+  calendarScopeIssue String?
+  /// When the user dismissed the "delete legacy Verdant events from your primary
+  /// calendar" notice. Set to a sentinel epoch for new users. Null until ack
+  /// for users carried through the calendar-scope migration.
+  legacyVerdantEventsAckAt DateTime?
+
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 }
 

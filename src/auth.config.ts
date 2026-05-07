@@ -11,8 +11,15 @@ const google = Google(
         clientSecret: googleSecret,
         authorization: {
           params: {
+            // Two non-sensitive scopes replace the prior single calendar.events
+            // scope (which let Verdant write anywhere on the user's primary
+            // calendar). app.created confines writes to a Verdant-owned
+            // secondary calendar; freebusy returns interval-only busy data
+            // for primary, no event content.
             scope:
-              "openid email profile https://www.googleapis.com/auth/calendar.events",
+              "openid email profile " +
+              "https://www.googleapis.com/auth/calendar.app.created " +
+              "https://www.googleapis.com/auth/calendar.events.freebusy",
             access_type: "offline",
             prompt: "consent",
             include_granted_scopes: "true",

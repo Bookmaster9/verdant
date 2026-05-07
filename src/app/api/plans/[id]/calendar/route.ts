@@ -24,6 +24,7 @@ export async function POST(_: Request, { params }: RouteParams) {
   const accessToken = s.accessToken;
 
   const { sessions, errors, syncedCount } = await syncUnsyncedSessions(
+    s.user.id,
     accessToken,
     schedule
   );

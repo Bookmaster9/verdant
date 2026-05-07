@@ -142,7 +142,6 @@ export function compileForbidRulesToBusy(
   ctx: { startDate: Date; deadline: Date }
 ): BusyInterval[] {
   const out: BusyInterval[] = [];
-  let counter = 0;
   const forbids = rules.filter(
     (r): r is Extract<PlacementRule, { kind: "forbid" }> => r.kind === "forbid"
   );
@@ -159,12 +158,7 @@ export function compileForbidRulesToBusy(
     const dayEnd = addDays(cursor, 1);
     for (const rule of forbids) {
       if (slotInForbidWindow({ start: dayStart }, rule.window)) {
-        out.push({
-          start: dayStart,
-          end: dayEnd,
-          calendarEventId: `forbid-${counter++}`,
-          isVerdant: false,
-        });
+        out.push({ start: dayStart, end: dayEnd });
         break;
       }
     }
@@ -314,9 +308,12 @@ export function applyPinRules(
 ): {
   schedule: import("@/types/plan").ScheduledSession[];
   pinned: BusyInterval[];
+  /** Set of session ids that were successfully pinned (for ack reporting). */
+  pinnedSessionIds: Set<string>;
 } {
   let next = schedule.map((s) => ({ ...s }));
   const pinnedBusy: BusyInterval[] = [];
+  const pinnedSessionIds = new Set<string>();
   for (const rule of rules) {
     if (rule.kind !== "pin") continue;
     const idx = next.findIndex((s) => s.id === rule.sessionId);
@@ -334,15 +331,11 @@ export function applyPinRules(
       end: newEnd.toISOString(),
       locked: true,
     };
-    pinnedBusy.push({
-      start: newStart,
-      end: newEnd,
-      calendarEventId: `pin-${sess.id}`,
-      isVerdant: true,
-    });
+    pinnedBusy.push({ start: newStart, end: newEnd });
+    pinnedSessionIds.add(sess.id);
   }
   next = next.sort(
     (a, b) => parseISO(a.start).getTime() - parseISO(b.start).getTime()
   );
-  return { schedule: next, pinned: pinnedBusy };
+  return { schedule: next, pinned: pinnedBusy, pinnedSessionIds };
 }
